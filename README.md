@@ -168,31 +168,6 @@ import math
 say math.sqrt(16)
 ```
 
-## Updates
-
-B++ updates are fixed to the official repository:
-
-```text
-https://github.com/MrGuineaBird/BPLUSPLUS
-```
-
-The update source cannot be changed from the installer or CLI.
-
-The updater checks the latest GitHub Release, compares the release tag with the installed compiler version, downloads the `bpp.exe` release asset, and replaces the installed compiler.
-
-Release tags should use version names such as:
-
-```text
-v5.2
-```
-
-Each release should include:
-
-```text
-bpp.exe
-B++ Setup.exe
-```
-
 ## Build From Source
 
 Requirements:
@@ -253,7 +228,3 @@ Run a B++ program from stdin:
 say "Hello from stdin"
 '@ | python .\b++.py --run -
 ```
-
-## License
-
-Add a license before publishing or distributing B++ publicly.
