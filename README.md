@@ -1,79 +1,35 @@
 # B++
 
-B++ is a small programming language that compiles `.bpp` source files into Python.
+B++ is a beginner-friendly programming language that compiles `.bpp` files to Python.
 
-The project includes:
+It includes a command-line compiler, a Windows setup wizard, `.bpp` file association, and GitHub Release based updates.
 
-- `b++.py` - the B++ compiler
-- `bpp_setup.py` - the Windows setup wizard
-- `build_bpp_installer.py` - builds the release executables
-- `dist/bpp.exe` - the packaged B++ compiler
-- `dist/B++ Setup.exe` - the Windows installer
+## Status
 
-## Install
+B++ currently targets Windows.
 
-Run:
+The compiler emits Python source code and can also compile and run a `.bpp` program in one command.
 
-```powershell
-& ".\dist\B++ Setup.exe"
-```
+## Installation
 
-You can also double-click `dist\B++ Setup.exe`.
-
-The setup wizard installs B++ for the current Windows user. It adds B++ to `PATH`, registers `.bpp` files, and installs:
+Download the latest `B++ Setup.exe` from the Releases page:
 
 ```text
-%LOCALAPPDATA%\Bpp\bin\bpp.exe
-%LOCALAPPDATA%\Bpp\bin\b++.exe
+https://github.com/MrGuineaBird/BPLUSPLUS/releases
 ```
 
-After installing, open a new terminal.
+Run the installer and open a new terminal after setup finishes.
 
-## Usage
+The installer adds B++ to your user `PATH` and registers `.bpp` files with Windows.
 
-Compile a B++ file to Python:
+Installed commands:
 
-```powershell
-bpp program.bpp
+```text
+bpp
+b++
 ```
 
-Compile and run:
-
-```powershell
-bpp --run program.bpp
-```
-
-Print generated Python:
-
-```powershell
-bpp --emit program.bpp
-```
-
-Check the install:
-
-```powershell
-bpp doctor
-```
-
-Check version:
-
-```powershell
-bpp --version
-```
-
-In `cmd.exe`, installed `.bpp` files can be run directly:
-
-```cmd
-program.bpp
-```
-
-PowerShell is stricter with custom executable extensions, so use:
-
-```powershell
-bpp --run .\program.bpp
-```
-
-## Example
+## Quick Start
 
 Create `hello.bpp`:
 
@@ -88,15 +44,62 @@ Run it:
 bpp --run .\hello.bpp
 ```
 
-Output:
+Compile it to Python:
 
-```text
-Hello B++
+```powershell
+bpp .\hello.bpp
 ```
 
-## Language Basics
+This creates:
 
-Variables:
+```text
+hello.py
+```
+
+Print the generated Python without running it:
+
+```powershell
+bpp --emit .\hello.bpp
+```
+
+## Running `.bpp` Files
+
+After installation, `cmd.exe` can run `.bpp` files directly:
+
+```cmd
+hello.bpp
+```
+
+PowerShell is stricter with custom executable extensions, so use:
+
+```powershell
+bpp --run .\hello.bpp
+```
+
+## Command Reference
+
+```powershell
+bpp file.bpp                 # compile to file.py
+bpp --run file.bpp           # compile and run
+bpp --emit file.bpp          # print generated Python
+bpp --version                # show compiler version
+bpp doctor                   # check the installation
+bpp updates                  # show update settings
+bpp check-update             # check GitHub for a newer release
+bpp update                   # install the newest release
+bpp --auto                   # enable automatic update checks
+bpp --no-auto                # disable automatic update checks
+```
+
+Use `--` to pass arguments to a B++ program when running it:
+
+```powershell
+bpp --run .\app.bpp -- arg1 arg2
+```
+
+## Language Examples
+
+### Variables
 
 ```bpp
 set score to 10
@@ -107,14 +110,14 @@ divide score by 2
 say score
 ```
 
-Input:
+### Input
 
 ```bpp
 ask "What is your name?" into name
 say "Hi " + name
 ```
 
-Conditionals:
+### Conditionals
 
 ```bpp
 set age to 18
@@ -126,7 +129,7 @@ else:
 end
 ```
 
-Loops:
+### Loops
 
 ```bpp
 repeat 3 times:
@@ -140,7 +143,7 @@ while count < 3:
 end
 ```
 
-Functions:
+### Functions
 
 ```bpp
 def square(x):
@@ -150,7 +153,7 @@ end
 say square(5)
 ```
 
-Files:
+### Files
 
 ```bpp
 write "hello" to "message.txt"
@@ -158,7 +161,7 @@ read "message.txt" into message
 say message
 ```
 
-Python imports are also supported:
+### Python Imports
 
 ```bpp
 import math
@@ -167,60 +170,36 @@ say math.sqrt(16)
 
 ## Updates
 
-B++ updates are locked to this GitHub repository:
+B++ updates are fixed to the official repository:
 
 ```text
 https://github.com/MrGuineaBird/BPLUSPLUS
 ```
 
-Users cannot change the update source from the CLI or installer.
+The update source cannot be changed from the installer or CLI.
 
-Check update settings:
+The updater checks the latest GitHub Release, compares the release tag with the installed compiler version, downloads the `bpp.exe` release asset, and replaces the installed compiler.
 
-```powershell
-bpp updates
+Release tags should use version names such as:
+
+```text
+v5.2
 ```
 
-Check for a newer release:
-
-```powershell
-bpp check-update
-```
-
-Install the newest release:
-
-```powershell
-bpp update
-```
-
-Enable automatic periodic update checks:
-
-```powershell
-bpp --auto
-```
-
-Disable automatic update checks:
-
-```powershell
-bpp --no-auto
-```
-
-Automatic updates check GitHub Releases for a newer release and download the `bpp.exe` asset from the latest release.
-
-For releases, upload at least:
+Each release should include:
 
 ```text
 bpp.exe
 B++ Setup.exe
 ```
 
-The release tag should be versioned like:
+## Build From Source
 
-```text
-v5.2
-```
+Requirements:
 
-## Build
+- Windows
+- Python 3.11 or newer
+- PyInstaller
 
 Install PyInstaller:
 
@@ -228,13 +207,13 @@ Install PyInstaller:
 python -m pip install pyinstaller
 ```
 
-Build both executables:
+Build the compiler and installer:
 
 ```powershell
 python .\build_bpp_installer.py
 ```
 
-Outputs:
+Build outputs:
 
 ```text
 dist\bpp.exe
@@ -242,26 +221,39 @@ dist\B++ Setup.exe
 dist\latest.example.json
 ```
 
-`latest.example.json` is a helper manifest example. The built-in updater uses GitHub Releases directly.
+`latest.example.json` is a helper file for release metadata. The built-in updater uses GitHub Releases directly.
 
-## Developer Commands
+## Project Layout
 
-Run compiler smoke test:
+```text
+b++.py                  B++ compiler source
+bpp_setup.py            Windows setup wizard
+build_bpp_installer.py  release build script
+dist/                   generated release artifacts
+```
+
+## Development
+
+Run the compiler smoke test:
 
 ```powershell
 python .\b++.py --self-test
 ```
 
-Compile-check the Python files:
+Compile-check the Python sources:
 
 ```powershell
 python -m py_compile .\b++.py .\bpp_setup.py .\build_bpp_installer.py
 ```
 
-Run from stdin:
+Run a B++ program from stdin:
 
 ```powershell
 @'
 say "Hello from stdin"
 '@ | python .\b++.py --run -
 ```
+
+## License
+
+Add a license before publishing or distributing B++ publicly.
