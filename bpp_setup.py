@@ -597,7 +597,7 @@ class NativeWizard:
         )
         self.add_page_control(
             "STATIC",
-            "After setup, open a new terminal and run bpp, b++, or .bpp files.",
+            "After setup, run bpp commands or open .bpp files directly.",
             32,
             188,
             640,
@@ -666,7 +666,7 @@ class NativeWizard:
             ID_CHECK_ASSOC,
             WS_TABSTOP | BS_AUTOCHECKBOX,
         )
-        self.add_page_control("STATIC", "Register .bpp files with Windows", 58, 276, 580, 24)
+        self.add_page_control("STATIC", "Open .bpp files with the B++ runner", 58, 276, 580, 24)
         self.add_page_control("STATIC", f"Updates source: GitHub Releases ({UPDATE_REPO})", 32, 318, 620, 22)
         self.auto_update_check = self.add_page_control(
             "BUTTON",
@@ -688,7 +688,7 @@ class NativeWizard:
         if self.install_succeeded:
             self.add_page_control("STATIC", "B++ is installed", 32, 110, 640, 30, font=self.heading_font)
             self.add_page_control("STATIC", f"Installed compiler: {self.installed_exe}", 32, 154, 640, 24)
-            self.add_page_control("STATIC", "Open a new terminal and run: bpp --version", 32, 188, 640, 24)
+            self.add_page_control("STATIC", "Open a .bpp file, or run: bpp --version", 32, 188, 640, 24)
             self.add_page_button("Open install folder", ID_OPEN_FOLDER, 32, 232, 168, 30)
         else:
             self.add_page_control("STATIC", "Installing B++", 32, 104, 640, 30, font=self.heading_font)

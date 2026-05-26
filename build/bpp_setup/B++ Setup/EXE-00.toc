@@ -111,7 +111,7 @@
  [],
  False,
  False,
- 1779791877,
+ 1779822245,
  [('runw.exe',
    'C:\\Users\\njboc\\.unsloth\\studio\\unsloth_studio\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
    'EXECUTABLE')],

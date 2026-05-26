@@ -67,6 +67,8 @@ Run it:
 bpp --run .\hello.bpp
 ```
 
+Running a B++ program compiles internally and does not leave a generated `.py` file behind.
+
 Compile it to Python:
 
 ```powershell
@@ -87,11 +89,13 @@ bpp --emit .\hello.bpp
 
 ## Running `.bpp` Files
 
-After installation, `cmd.exe` can run `.bpp` files directly:
+After installation, Windows can open `.bpp` files through B++. In `cmd.exe`, `.bpp` files can run directly:
 
 ```cmd
 hello.bpp
 ```
+
+Double-clicking or opening a `.bpp` file also runs it through the installed B++ runner.
 
 PowerShell is stricter with custom executable extensions, so use:
 
@@ -123,8 +127,8 @@ chmod +x hello.bpp
 
 ```powershell
 bpp file.bpp                 # compile to file.py
-bpp --run file.bpp           # compile and run
-bpp --emit file.bpp          # print generated Python
+bpp --run file.bpp           # run without leaving a .py file
+bpp --emit file.bpp          # print generated Python without writing it
 bpp --version                # show compiler version
 bpp --install                # install B++ for the current user
 bpp --uninstall              # remove the current-user install

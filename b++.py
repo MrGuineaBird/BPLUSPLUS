@@ -1831,7 +1831,7 @@ def build_arg_parser():
     parser.add_argument("source", nargs="?", help="B++ source file (.bpp/.bpm), or '-' for stdin")
     parser.add_argument("-o", "--output", help="Python output path")
     parser.add_argument("--emit", action="store_true", help="print the generated Python")
-    parser.add_argument("--run", action="store_true", help="compile, then run the generated Python")
+    parser.add_argument("--run", action="store_true", help="run B++ source without keeping generated Python")
     parser.add_argument("--quiet", action="store_true", help="hide compile status messages")
     parser.add_argument("--install", action="store_true", help="install B++ for the current user")
     parser.add_argument("--uninstall", action="store_true", help="remove the current-user B++ install")
@@ -1936,7 +1936,7 @@ def main(argv=None):
         output_path = args.output
         temp_path = None
 
-        if args.source != "-" and output_path is None:
+        if args.source != "-" and output_path is None and not args.run and not args.emit:
             output_path = default_output_path(args.source)
 
         if output_path:
