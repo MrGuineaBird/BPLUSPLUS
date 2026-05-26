@@ -1,0 +1,61 @@
+# B++ example program
+# Run with: bpp --run example.bpp
+
+say "Welcome to B++!"
+say "B++ feels like Scratch blocks written as text."
+say ""
+
+set name to "new programmer"
+say "Hello, " + name + "!"
+
+set score to 0
+add 5 to score
+multiply score by 2
+say "Score: " + score
+
+set names to []
+put "Ada" in names
+put "Bea" in names
+put "Kai" in names
+
+say ""
+say "Friends:"
+
+for each friend in names:
+    say "- " + friend
+end
+
+say ""
+say "Counting:"
+
+repeat 3 times as turn:
+    say turn
+end
+
+def double(value):
+    return value * 2
+end
+
+say ""
+say "Double score: " + double(score)
+
+set count to 0
+
+forever:
+    add 1 to count
+
+    if count == 2:
+        next loop
+    end
+
+    say "Loop count: " + count
+
+    if count == 4:
+        stop loop
+    end
+end
+
+if true and nothing == nil:
+    say ""
+    say "B++ is ready."
+end

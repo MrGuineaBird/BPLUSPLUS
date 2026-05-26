@@ -87,6 +87,12 @@ Print the generated Python without running it:
 bpp --emit .\hello.bpp
 ```
 
+The repository also includes `example.bpp`, a longer sample program showing variables, lists, loops, functions, and loop controls:
+
+```powershell
+bpp --run .\example.bpp
+```
+
 ## Running `.bpp` Files
 
 After installation, Windows can open `.bpp` files through B++. In `cmd.exe`, `.bpp` files can run directly:
@@ -499,6 +505,7 @@ dist/latest.example.json
 b++.py                  B++ compiler source
 bpp_setup.py            Windows setup wizard
 build_bpp_installer.py  release build script
+example.bpp             example B++ program
 dist/                   generated release artifacts
 ```
 
