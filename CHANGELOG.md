@@ -1,5 +1,19 @@
 # Changelog
 
+## B++ 4.1
+
+B++ 4.1 adds the native Windows update path for the C version of B++.
+
+- Added `bpp_version.h` as the shared version file.
+- Added native Windows GitHub Release update checks.
+- Added `bpp check-update`.
+- Added `bpp update`.
+- Added `bpp updates`.
+- Added `bpp --auto` and `bpp --no-auto`.
+- Update checks are locked to `MrGuineaBird/BPLUSPLUS`.
+- Windows updates download the release asset named exactly `bpp.exe`.
+- Updated the Windows and Linux install instructions in the README.
+
 ## B++ 4.0
 
 B++ 4.0 is the native switch. The old scripting-language compiler path was
@@ -84,4 +98,4 @@ removed, and the C compiler is now the main implementation.
 
 - Native `.bpm` modules.
 - Direct run mode.
-- Release updater for native builds.
+- Linux release updater support.
