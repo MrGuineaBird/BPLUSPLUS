@@ -3,7 +3,7 @@ setlocal
 
 where gcc >nul 2>nul
 if %errorlevel%==0 (
-    gcc bpp.c -O2 -Wall -Wextra -o bpp.exe
+    gcc bpp.c -O2 -Wall -Wextra -o bpp.exe -lwininet
     if errorlevel 1 exit /b %errorlevel%
     gcc setup.c -O2 -Wall -Wextra -o "B++ Setup.exe" -mwindows -lshell32 -ladvapi32 -lole32
     exit /b %errorlevel%
@@ -11,7 +11,7 @@ if %errorlevel%==0 (
 
 where cl >nul 2>nul
 if %errorlevel%==0 (
-    cl /O2 /Fe:bpp.exe bpp.c
+    cl /O2 /Fe:bpp.exe bpp.c wininet.lib
     if errorlevel 1 exit /b %errorlevel%
     cl /O2 /Fe"B++ Setup.exe" setup.c user32.lib gdi32.lib shell32.lib advapi32.lib ole32.lib
     exit /b %errorlevel%

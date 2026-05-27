@@ -16,7 +16,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define BPP_VERSION "4.0"
+#include "bpp_version.h"
+
 #define APP_CLASS "BppSetupWindow"
 #define INSTALL_NAME "B++ Setup"
 #define PATH_LIMIT 4096

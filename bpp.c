@@ -31,8 +31,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-#define BPP_VERSION "4.0"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <wininet.h>
+#endif
+
+#include "bpp_version.h"
+
+#define BPP_UPDATE_REPO "MrGuineaBird/BPLUSPLUS"
+#define BPP_UPDATE_API "https://api.github.com/repos/" BPP_UPDATE_REPO "/releases/latest"
+#define BPP_UPDATE_CHECK_SECONDS 86400
 
 typedef struct {
     char *data;
@@ -142,6 +153,13 @@ static void sb_append(StringBuilder *sb, const char *text) {
     sb_reserve(sb, len);
     memcpy(sb->data + sb->len, text, len + 1);
     sb->len += len;
+}
+
+static void sb_append_len(StringBuilder *sb, const char *text, size_t len) {
+    sb_reserve(sb, len);
+    memcpy(sb->data + sb->len, text, len);
+    sb->len += len;
+    sb->data[sb->len] = '\0';
 }
 
 static void sb_appendf(StringBuilder *sb, const char *fmt, ...) {
@@ -1242,16 +1260,503 @@ static int compile_source_to_c(const char *source_path, const char *src, StringB
     return ok;
 }
 
+#ifdef _WIN32
+
+typedef struct {
+    char *tag;
+    char *asset_url;
+} UpdateInfo;
+
+static void update_info_free(UpdateInfo *info) {
+    free(info->tag);
+    free(info->asset_url);
+    info->tag = NULL;
+    info->asset_url = NULL;
+}
+
+static int http_get_text(const char *url, char **out_text) {
+    const char *headers = "User-Agent: B++ updater\r\nAccept: application/vnd.github+json\r\n";
+    HINTERNET internet = InternetOpenA("B++ updater", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    if (!internet) {
+        return 0;
+    }
+
+    HINTERNET request = InternetOpenUrlA(
+        internet,
+        url,
+        headers,
+        (DWORD)-1,
+        INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_SECURE,
+        0
+    );
+    if (!request) {
+        InternetCloseHandle(internet);
+        return 0;
+    }
+
+    StringBuilder response;
+    sb_init(&response);
+
+    char buffer[8192];
+    DWORD read = 0;
+    while (InternetReadFile(request, buffer, sizeof(buffer), &read) && read > 0) {
+        sb_append_len(&response, buffer, read);
+    }
+
+    InternetCloseHandle(request);
+    InternetCloseHandle(internet);
+    *out_text = response.data;
+    return 1;
+}
+
+static int http_download_file(const char *url, const char *path) {
+    const char *headers = "User-Agent: B++ updater\r\n";
+    HINTERNET internet = InternetOpenA("B++ updater", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    if (!internet) {
+        return 0;
+    }
+
+    HINTERNET request = InternetOpenUrlA(
+        internet,
+        url,
+        headers,
+        (DWORD)-1,
+        INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_SECURE,
+        0
+    );
+    if (!request) {
+        InternetCloseHandle(internet);
+        return 0;
+    }
+
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        InternetCloseHandle(request);
+        InternetCloseHandle(internet);
+        return 0;
+    }
+
+    int ok = 1;
+    char buffer[8192];
+    DWORD read = 0;
+    while (InternetReadFile(request, buffer, sizeof(buffer), &read) && read > 0) {
+        if (fwrite(buffer, 1, read, file) != read) {
+            ok = 0;
+            break;
+        }
+    }
+
+    fclose(file);
+    InternetCloseHandle(request);
+    InternetCloseHandle(internet);
+    return ok;
+}
+
+static char *json_string_after(const char *start, const char *key) {
+    const char *found = strstr(start, key);
+    if (!found) {
+        return NULL;
+    }
+
+    const char *colon = strchr(found, ':');
+    if (!colon) {
+        return NULL;
+    }
+
+    const char *quote = strchr(colon, '"');
+    if (!quote) {
+        return NULL;
+    }
+    quote++;
+
+    StringBuilder out;
+    sb_init(&out);
+    for (const char *p = quote; *p; p++) {
+        if (*p == '\\' && p[1]) {
+            sb_append_len(&out, p + 1, 1);
+            p++;
+            continue;
+        }
+        if (*p == '"') {
+            return out.data;
+        }
+        sb_append_len(&out, p, 1);
+    }
+
+    sb_free(&out);
+    return NULL;
+}
+
+static char *json_release_asset_url(const char *json, const char *asset_name) {
+    const char *p = json;
+    while ((p = strstr(p, "\"name\"")) != NULL) {
+        char *name = json_string_after(p, "\"name\"");
+        if (!name) {
+            p += 6;
+            continue;
+        }
+
+        int matches = strcmp(name, asset_name) == 0;
+        free(name);
+        if (matches) {
+            const char *url_key = strstr(p, "\"browser_download_url\"");
+            const char *next_name = strstr(p + 6, "\"name\"");
+            if (url_key && (!next_name || url_key < next_name)) {
+                return json_string_after(url_key, "\"browser_download_url\"");
+            }
+        }
+        p += 6;
+    }
+
+    return NULL;
+}
+
+static int next_version_part(const char **text) {
+    const unsigned char *p = (const unsigned char *)*text;
+    while (*p && !isdigit(*p)) {
+        p++;
+    }
+    if (!*p) {
+        *text = (const char *)p;
+        return -1;
+    }
+
+    int value = 0;
+    while (*p && isdigit(*p)) {
+        value = value * 10 + (*p - '0');
+        p++;
+    }
+    *text = (const char *)p;
+    return value;
+}
+
+static int compare_versions(const char *left, const char *right) {
+    const char *a = left;
+    const char *b = right;
+    for (int i = 0; i < 8; i++) {
+        int av = next_version_part(&a);
+        int bv = next_version_part(&b);
+        if (av < 0 && bv < 0) {
+            return 0;
+        }
+        if (av < 0) {
+            av = 0;
+        }
+        if (bv < 0) {
+            bv = 0;
+        }
+        if (av != bv) {
+            return av > bv ? 1 : -1;
+        }
+    }
+    return 0;
+}
+
+static int fetch_update_info(UpdateInfo *info) {
+    info->tag = NULL;
+    info->asset_url = NULL;
+
+    char *json = NULL;
+    if (!http_get_text(BPP_UPDATE_API, &json)) {
+        return 0;
+    }
+
+    info->tag = json_string_after(json, "\"tag_name\"");
+    info->asset_url = json_release_asset_url(json, "bpp.exe");
+    free(json);
+
+    if (!info->tag || !info->asset_url) {
+        update_info_free(info);
+        return 0;
+    }
+
+    return 1;
+}
+
+static void bpp_appdata_dir(char *out, size_t out_size) {
+    DWORD got = GetEnvironmentVariableA("LOCALAPPDATA", out, (DWORD)out_size);
+    if (got == 0 || got >= out_size) {
+        GetEnvironmentVariableA("USERPROFILE", out, (DWORD)out_size);
+        strncat(out, "\\AppData\\Local", out_size - strlen(out) - 1);
+    }
+    strncat(out, "\\Bpp", out_size - strlen(out) - 1);
+}
+
+static void update_config_path(char *out, size_t out_size) {
+    bpp_appdata_dir(out, out_size);
+    CreateDirectoryA(out, NULL);
+    strncat(out, "\\updates.cfg", out_size - strlen(out) - 1);
+}
+
+static void read_update_config(int *auto_enabled, long long *last_check) {
+    char path[MAX_PATH];
+    update_config_path(path, sizeof(path));
+    *auto_enabled = 1;
+    *last_check = 0;
+
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        return;
+    }
+
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return;
+    }
+    long size = ftell(file);
+    if (size < 0) {
+        fclose(file);
+        return;
+    }
+    rewind(file);
+
+    char *text = (char *)xmalloc((size_t)size + 1);
+    size_t read = fread(text, 1, (size_t)size, file);
+    text[read] = '\0';
+    fclose(file);
+
+    char *auto_line = strstr(text, "auto=");
+    if (auto_line) {
+        *auto_enabled = atoi(auto_line + 5) != 0;
+    }
+
+    char *last_line = strstr(text, "last_check=");
+    if (last_line) {
+        *last_check = _atoi64(last_line + 11);
+    }
+
+    free(text);
+}
+
+static void write_update_config(int auto_enabled, long long last_check) {
+    char path[MAX_PATH];
+    update_config_path(path, sizeof(path));
+
+    FILE *file = fopen(path, "w");
+    if (!file) {
+        return;
+    }
+    fprintf(file, "auto=%d\nlast_check=%lld\n", auto_enabled ? 1 : 0, last_check);
+    fclose(file);
+}
+
+static int command_updates(void) {
+    int auto_enabled = 1;
+    long long last_check = 0;
+    read_update_config(&auto_enabled, &last_check);
+
+    printf("B++ updates\n");
+    printf("source: https://github.com/%s\n", BPP_UPDATE_REPO);
+    printf("asset: bpp.exe\n");
+    printf("auto checks: %s\n", auto_enabled ? "on" : "off");
+    if (last_check > 0) {
+        printf("last check: %lld\n", last_check);
+    } else {
+        printf("last check: never\n");
+    }
+    return 0;
+}
+
+static int command_set_auto_updates(int enabled) {
+    int current_auto = 1;
+    long long last_check = 0;
+    read_update_config(&current_auto, &last_check);
+    write_update_config(enabled, last_check);
+    printf("B++ automatic update checks are %s.\n", enabled ? "on" : "off");
+    return 0;
+}
+
+static int command_check_update(void) {
+    UpdateInfo info;
+    if (!fetch_update_info(&info)) {
+        fprintf(stderr, "bpp: could not check GitHub Releases for updates.\n");
+        return 1;
+    }
+
+    int newer = compare_versions(info.tag, BPP_VERSION) > 0;
+    if (newer) {
+        printf("B++ update available: %s (installed %s)\n", info.tag, BPP_VERSION);
+        printf("Run: bpp update\n");
+    } else {
+        printf("B++ is up to date: %s\n", BPP_VERSION);
+    }
+
+    update_info_free(&info);
+    return 0;
+}
+
+static int launch_update_script(const char *downloaded_exe, const char *target_exe, const char *tag) {
+    char temp_dir[MAX_PATH];
+    char script_path[MAX_PATH];
+    GetTempPathA(sizeof(temp_dir), temp_dir);
+    snprintf(script_path, sizeof(script_path), "%sbpp_apply_update.cmd", temp_dir);
+
+    FILE *script = fopen(script_path, "w");
+    if (!script) {
+        return 0;
+    }
+
+    fprintf(script, "@echo off\r\n");
+    fprintf(script, "timeout /t 2 /nobreak >nul\r\n");
+    fprintf(script, "copy /Y \"%s\" \"%s\" >nul\r\n", downloaded_exe, target_exe);
+    fprintf(script, "if errorlevel 1 (\r\n");
+    fprintf(script, "  echo B++ update failed.\r\n");
+    fprintf(script, "  pause\r\n");
+    fprintf(script, "  exit /b 1\r\n");
+    fprintf(script, ")\r\n");
+    fprintf(script, "del \"%s\" >nul 2>nul\r\n", downloaded_exe);
+    fprintf(script, "echo B++ updated to %s.\r\n", tag);
+    fprintf(script, "del \"%%~f0\" >nul 2>nul\r\n");
+    fclose(script);
+
+    char command_line[MAX_PATH * 2];
+    snprintf(command_line, sizeof(command_line), "cmd.exe /C \"\"%s\"\"", script_path);
+
+    STARTUPINFOA startup;
+    PROCESS_INFORMATION process;
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&process, sizeof(process));
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+
+    if (!CreateProcessA(NULL, command_line, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &startup, &process)) {
+        return 0;
+    }
+
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return 1;
+}
+
+static int command_update(void) {
+    UpdateInfo info;
+    if (!fetch_update_info(&info)) {
+        fprintf(stderr, "bpp: could not check GitHub Releases for updates.\n");
+        return 1;
+    }
+
+    if (compare_versions(info.tag, BPP_VERSION) <= 0) {
+        printf("B++ is already up to date: %s\n", BPP_VERSION);
+        update_info_free(&info);
+        return 0;
+    }
+
+    char temp_dir[MAX_PATH];
+    char downloaded_exe[MAX_PATH];
+    char current_exe[MAX_PATH];
+    GetTempPathA(sizeof(temp_dir), temp_dir);
+    snprintf(downloaded_exe, sizeof(downloaded_exe), "%sbpp_update.exe", temp_dir);
+    GetModuleFileNameA(NULL, current_exe, sizeof(current_exe));
+
+    printf("Downloading B++ %s...\n", info.tag);
+    if (!http_download_file(info.asset_url, downloaded_exe)) {
+        fprintf(stderr, "bpp: could not download bpp.exe from the latest release.\n");
+        update_info_free(&info);
+        return 1;
+    }
+
+    if (!launch_update_script(downloaded_exe, current_exe, info.tag)) {
+        fprintf(stderr, "bpp: could not launch the updater helper.\n");
+        DeleteFileA(downloaded_exe);
+        update_info_free(&info);
+        return 1;
+    }
+
+    printf("B++ will finish updating after this command exits.\n");
+    update_info_free(&info);
+    return 0;
+}
+
+static void maybe_auto_check_updates(void) {
+    int auto_enabled = 1;
+    long long last_check = 0;
+    long long now = (long long)time(NULL);
+    read_update_config(&auto_enabled, &last_check);
+
+    if (!auto_enabled || now <= 0 || now - last_check < BPP_UPDATE_CHECK_SECONDS) {
+        return;
+    }
+
+    write_update_config(auto_enabled, now);
+
+    UpdateInfo info;
+    if (!fetch_update_info(&info)) {
+        return;
+    }
+
+    if (compare_versions(info.tag, BPP_VERSION) > 0) {
+        fprintf(stderr, "B++ update available: %s. Run `bpp update`.\n", info.tag);
+    }
+
+    update_info_free(&info);
+}
+
+#else
+
+static int command_updates(void) {
+    printf("B++ updates\n");
+    printf("source: https://github.com/%s\n", BPP_UPDATE_REPO);
+    printf("native updater: not available in this build yet\n");
+    return 0;
+}
+
+static int command_set_auto_updates(int enabled) {
+    (void)enabled;
+    fprintf(stderr, "bpp: automatic updates are not available in this build yet.\n");
+    return 1;
+}
+
+static int command_check_update(void) {
+    fprintf(stderr, "bpp: GitHub updates are not available in this build yet.\n");
+    return 1;
+}
+
+static int command_update(void) {
+    fprintf(stderr, "bpp: GitHub updates are not available in this build yet.\n");
+    return 1;
+}
+
+static void maybe_auto_check_updates(void) {
+}
+
+#endif
+
 static void print_help(void) {
     printf("B++ compiler %s\n", BPP_VERSION);
     printf("Usage: bpp <source.bpp> [-o output.c]\n");
     printf("\n");
     printf("Compiles B++ source to C source.\n");
+    printf("\n");
+    printf("Commands:\n");
+    printf("  bpp check-update    check GitHub Releases for a newer B++\n");
+    printf("  bpp update          install the newest bpp.exe release asset\n");
+    printf("  bpp updates         show update settings\n");
+    printf("  bpp --auto          enable automatic update checks\n");
+    printf("  bpp --no-auto       disable automatic update checks\n");
 }
 
 int main(int argc, char **argv) {
     const char *source_path = NULL;
     const char *output_path = NULL;
+
+    if (argc == 2) {
+        if (strcmp(argv[1], "updates") == 0) {
+            return command_updates();
+        }
+        if (strcmp(argv[1], "check-update") == 0) {
+            return command_check_update();
+        }
+        if (strcmp(argv[1], "update") == 0) {
+            return command_update();
+        }
+        if (strcmp(argv[1], "--auto") == 0) {
+            return command_set_auto_updates(1);
+        }
+        if (strcmp(argv[1], "--no-auto") == 0) {
+            return command_set_auto_updates(0);
+        }
+    }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -1278,6 +1783,8 @@ int main(int argc, char **argv) {
         print_help();
         return 2;
     }
+
+    maybe_auto_check_updates();
 
     char *src = read_file(source_path);
     if (!src) {

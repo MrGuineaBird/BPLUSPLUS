@@ -1,0 +1,95 @@
+# Changelog
+
+## B++ 4.0
+
+B++ 4.0 is the native switch. The old scripting-language compiler path was
+removed, and the C compiler is now the main implementation.
+
+### Native Compiler
+
+- Added `bpp.c` as the main B++ compiler source.
+- Added `bpp_version.h` as the shared version file.
+- The compiler is written in C.
+- `.bpp` files now compile to C source.
+- The generated C includes the B++ runtime needed by the program.
+- The command is now `bpp`.
+- `bpp --version` reports the B++ compiler version.
+- `bpp file.bpp -o file.c` writes generated C to a file.
+- `bpp file.bpp` prints generated C to stdout.
+- Added native Windows GitHub Release update checks.
+- Added `bpp check-update`.
+- Added `bpp update`.
+- Added `bpp updates`.
+- Added `bpp --auto` and `bpp --no-auto`.
+- Update checks are locked to `MrGuineaBird/BPLUSPLUS`.
+- Windows updates download the release asset named exactly `bpp.exe`.
+
+### Removed Old Tooling
+
+- Removed the old compiler source file.
+- Removed the old setup wizard.
+- Removed the old release build script.
+- Removed generated app-bundler build output.
+- Removed generated `dist` release artifacts from the repository.
+- Removed docs for the old generated-source workflow.
+
+### Language
+
+- Kept the clear B++ command syntax:
+  - `say`
+  - `set`
+  - `add`
+  - `subtract`
+  - `multiply`
+  - `divide`
+  - `ask`
+  - `read`
+  - `write`
+- Kept lowercase beginner constants:
+  - `true`
+  - `false`
+  - `nothing`
+  - `nil`
+- Kept `say value without newline`.
+- Kept list commands:
+  - `put value in list`
+  - `remove value from list`
+  - `empty list`
+- Kept list literals like `["Ada", "Bea"]`.
+- Kept conditionals with `if`, `elif`, `else`, and `end`.
+- Kept loops:
+  - `repeat count times:`
+  - `repeat count times as name:`
+  - `for each name in list:`
+  - `while condition:`
+  - `forever:`
+- Kept loop controls:
+  - `stop loop`
+  - `next loop`
+- Kept functions with `def`, `return`, and `end`.
+- Kept comments using `#`.
+
+### Build
+
+- Added a root `Makefile`.
+- Added `build.bat` for Windows compiler builds.
+- Added `build.sh` for shell builds.
+- Build output is `bpp` or `bpp.exe`.
+- Added `make install` and `make uninstall` for Linux-style user installs.
+- Added `setup.c`, a native Windows setup wizard.
+- Windows builds now produce `B++ Setup.exe` when a Windows C compiler is available.
+- The setup wizard installs `bpp.exe` to the current user's AppData folder.
+- The setup wizard can add B++ to user `PATH`, create a `b++` alias, and register `.bpp` files.
+
+### Examples And Docs
+
+- Updated `README.md` for public native B++ usage.
+- Updated `DESIGN.md` around the native-first direction.
+- Added `examples/native_demo.bpp`.
+- Updated `example.bpp` for the native compiler workflow.
+
+### Still Being Built
+
+- Native `.bpm` modules.
+- Direct run mode.
+- Linux release updater support.

@@ -19,4 +19,4 @@ windows-setup: setup.c
 	$(CC) $(CFLAGS) setup.c -o "B++ Setup.exe" -mwindows -lshell32 -ladvapi32 -lole32
 
 clean:
-	rm -f bpp bpp.exe "B++ Setup.exe" native_demo native_demo.exe native_demo.c native_demo.txt
+	rm -f bpp bpp.exe "B++ Setup.exe" *.obj native_demo native_demo.exe native_demo.c native_demo.txt
