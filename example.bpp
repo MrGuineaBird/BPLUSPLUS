@@ -1,5 +1,5 @@
 # B++ example program
-# Run with: bpp --run example.bpp
+# Compile with: bpp example.bpp -o example.c
 
 say "Welcome to B++!"
 say "B++ feels like Scratch blocks written as text."
@@ -32,12 +32,12 @@ repeat 3 times as turn:
     say turn
 end
 
-def double(value):
+def twice(value):
     return value * 2
 end
 
 say ""
-say "Double score: " + double(score)
+say "Double score: " + twice(score)
 
 set count to 0
 
