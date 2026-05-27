@@ -84,55 +84,6 @@ The setup wizard installs B++ for the current Windows user. By default it copies
 %LOCALAPPDATA%\Bpp\bin
 ```
 
-## GitHub Releases And Updates
-
-B++ update checks are locked to:
-
-```text
-https://github.com/MrGuineaBird/BPLUSPLUS
-```
-
-Before making a release, bump the version in:
-
-```text
-bpp_version.h
-```
-
-Use a GitHub Release tag that matches the version:
-
-```text
-v4.1
-```
-
-Then build the Windows release files:
-
-```cmd
-build.bat
-```
-
-Upload these files to the GitHub Release:
-
-```text
-bpp.exe
-B++ Setup.exe
-```
-
-The updater downloads the release asset named exactly `bpp.exe`. The setup
-wizard is included for new installs and manual reinstalls.
-
-Update commands:
-
-```text
-bpp check-update    check the latest GitHub Release
-bpp update          download and install the newest bpp.exe
-bpp updates         show update settings
-bpp --auto          enable automatic update checks
-bpp --no-auto       disable automatic update checks
-```
-
-Automatic checks run at most once per day. If a newer release exists, B++ prints
-a notice telling the user to run `bpp update`.
-
 ## Install On Linux
 
 Requirements:
@@ -269,11 +220,6 @@ bpp file.bpp -o file.c       compile B++ to C
 bpp file.bpp                 print generated C to stdout
 bpp --version                show compiler version
 bpp --help                   show help
-bpp check-update             check GitHub Releases for an update
-bpp update                   install the newest bpp.exe release asset
-bpp updates                  show update settings
-bpp --auto                   enable automatic update checks
-bpp --no-auto                disable automatic update checks
 ```
 
 ## Syntax Reference
@@ -557,7 +503,6 @@ The native module system is still being designed.
 
 ```text
 bpp.c                     native B++ compiler
-bpp_version.h             shared version number
 setup.c                   native Windows setup wizard
 Makefile                  Unix-style build file
 build.bat                 Windows build helper

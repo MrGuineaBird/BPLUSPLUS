@@ -8,7 +8,6 @@ removed, and the C compiler is now the main implementation.
 ### Native Compiler
 
 - Added `bpp.c` as the main B++ compiler source.
-- Added `bpp_version.h` as the shared version file.
 - The compiler is written in C.
 - `.bpp` files now compile to C source.
 - The generated C includes the B++ runtime needed by the program.
@@ -16,13 +15,6 @@ removed, and the C compiler is now the main implementation.
 - `bpp --version` reports the B++ compiler version.
 - `bpp file.bpp -o file.c` writes generated C to a file.
 - `bpp file.bpp` prints generated C to stdout.
-- Added native Windows GitHub Release update checks.
-- Added `bpp check-update`.
-- Added `bpp update`.
-- Added `bpp updates`.
-- Added `bpp --auto` and `bpp --no-auto`.
-- Update checks are locked to `MrGuineaBird/BPLUSPLUS`.
-- Windows updates download the release asset named exactly `bpp.exe`.
 
 ### Removed Old Tooling
 
@@ -92,4 +84,4 @@ removed, and the C compiler is now the main implementation.
 
 - Native `.bpm` modules.
 - Direct run mode.
-- Linux release updater support.
+- Release updater for native builds.
