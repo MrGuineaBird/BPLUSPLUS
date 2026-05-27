@@ -1267,6 +1267,12 @@ typedef struct {
     char *asset_url;
 } UpdateInfo;
 
+static char g_update_error[256];
+
+static void set_update_error(const char *message) {
+    snprintf(g_update_error, sizeof(g_update_error), "%s", message);
+}
+
 static void update_info_free(UpdateInfo *info) {
     free(info->tag);
     free(info->asset_url);
@@ -1458,14 +1464,22 @@ static int fetch_update_info(UpdateInfo *info) {
 
     char *json = NULL;
     if (!http_get_text(BPP_UPDATE_API, &json)) {
+        set_update_error("could not reach the GitHub Releases API");
         return 0;
     }
 
     info->tag = json_string_after(json, "\"tag_name\"");
+    if (!info->tag) {
+        set_update_error("latest GitHub Release was not found; create a published release, not only a tag");
+        free(json);
+        return 0;
+    }
+
     info->asset_url = json_release_asset_url(json, "bpp.exe");
     free(json);
 
-    if (!info->tag || !info->asset_url) {
+    if (!info->asset_url) {
+        set_update_error("latest GitHub Release is missing the required bpp.exe asset");
         update_info_free(info);
         return 0;
     }
@@ -1569,7 +1583,7 @@ static int command_set_auto_updates(int enabled) {
 static int command_check_update(void) {
     UpdateInfo info;
     if (!fetch_update_info(&info)) {
-        fprintf(stderr, "bpp: could not check GitHub Releases for updates.\n");
+        fprintf(stderr, "bpp: could not check GitHub Releases for updates: %s.\n", g_update_error);
         return 1;
     }
 
@@ -1632,7 +1646,7 @@ static int launch_update_script(const char *downloaded_exe, const char *target_e
 static int command_update(void) {
     UpdateInfo info;
     if (!fetch_update_info(&info)) {
-        fprintf(stderr, "bpp: could not check GitHub Releases for updates.\n");
+        fprintf(stderr, "bpp: could not check GitHub Releases for updates: %s.\n", g_update_error);
         return 1;
     }
 
