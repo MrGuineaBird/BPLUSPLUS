@@ -1,56 +1,165 @@
 # B++
 
-B++ is a beginner-friendly programming language that compiles `.bpp` files to Python. It is meant to feel like Scratch blocks written as text, with the simple `end` style of languages like Ruby and Lua.
+B++ is a small general-purpose programming language with human-readable syntax.
+It is designed to feel clear like text-based Scratch, structured like Ruby or Lua,
+and strict enough to keep mistakes understandable.
 
-It includes a command-line compiler, a Windows setup wizard, Linux user-local installation, `.bpp` file association on Windows, and GitHub Release based updates.
+B++ 4.0 is now native-first. The compiler is written in C and compiles `.bpp`
+programs to C source code.
+
+```text
+B++ -> C -> native executable
+```
 
 ## Status
 
 B++ version: `4.0`
 
-B++ currently targets Windows and Linux.
+Current compiler:
 
-The compiler emits Python source code and can also compile and run a `.bpp` program in one command.
+- source: `bpp.c`
+- command: `bpp`
+- input: `.bpp`
+- output: `.c`
+- runtime: generated C
 
-## Installation
+B++ does not require another scripting language to compile B++ code.
 
-### Windows
+## Design Philosophy
 
-Download the latest `B++ Setup.exe` from the Releases page:
+B++ is clear.
 
-```text
-https://github.com/MrGuineaBird/BPLUSPLUS/releases
+B++ follows a few rules:
+
+- Code should read like a direct command.
+- Common actions should have one obvious spelling.
+- Blocks use `end` so structure is visible.
+- Errors should explain the mistake in B++ terms.
+- Hidden magic should be avoided.
+- Native speed should not make the language harder to read.
+
+## Install On Windows
+
+Requirements:
+
+- Visual Studio Build Tools with **Desktop development with C++**, or MinGW-w64
+
+Open **Developer Command Prompt for Visual Studio** or a terminal where your C
+compiler works, then run:
+
+```cmd
+cd "C:\path\to\BPLUSPLUS"
+build.bat
 ```
 
-Run the installer and open a new terminal after setup finishes.
+This builds:
 
-The installer adds B++ to your user `PATH` and registers `.bpp` files with Windows.
+```text
+bpp.exe
+B++ Setup.exe
+```
 
-Installed commands:
+Run the setup wizard:
+
+```cmd
+"B++ Setup.exe"
+```
+
+Keep the default options checked:
+
+- Add B++ to user `PATH`
+- Create `b++` command alias
+- Register `.bpp` files with Windows
+
+After setup finishes, open a new terminal and check:
+
+```cmd
+bpp --version
+```
+
+The setup wizard installs B++ for the current Windows user. By default it copies
+`bpp.exe` to:
+
+```text
+%LOCALAPPDATA%\Bpp\bin
+```
+
+## Install On Linux
+
+Requirements:
+
+- GCC or Clang
+- `make`
+
+Build and install for the current user:
+
+```sh
+make
+make install
+```
+
+This installs:
+
+```text
+~/.local/bin/bpp
+```
+
+Make sure `~/.local/bin` is in your `PATH`. Then check:
+
+```sh
+bpp --version
+```
+
+To uninstall:
+
+```sh
+make uninstall
+```
+
+To install somewhere else, set `PREFIX`:
+
+```sh
+make install PREFIX=/usr/local
+```
+
+You may need `sudo` when installing outside your home folder.
+
+## Build From Source
+
+Install a C compiler first.
+
+On Linux or macOS with `cc`, GCC, or Clang:
+
+```sh
+make
+```
+
+On Windows with MinGW or a Visual Studio Developer Command Prompt:
+
+```bat
+build.bat
+```
+
+This builds the compiler:
 
 ```text
 bpp
-b++
 ```
 
-### Linux
-
-Clone or download the repository, then run:
-
-```sh
-python3 b++.py --install
-```
-
-This installs B++ for the current user:
+or on Windows:
 
 ```text
-~/.local/share/bpp
-~/.local/bin/bpp
-~/.local/bin/b++
-~/.local/bin/bpp-run
+bpp.exe
 ```
 
-Make sure `~/.local/bin` is in your `PATH`.
+On Windows, `build.bat` also builds the native setup wizard:
+
+```text
+B++ Setup.exe
+```
+
+The `.bpp` file association currently compiles a `.bpp` file to C. Direct
+double-click run mode is still being built for the native compiler.
 
 ## Quick Start
 
@@ -61,130 +170,92 @@ set name to "B++"
 say "Hello " + name
 ```
 
+Compile it to C:
+
+```sh
+bpp hello.bpp -o hello.c
+```
+
+Compile the generated C:
+
+```sh
+cc hello.c -o hello -lm
+```
+
 Run it:
 
-```powershell
-bpp --run .\hello.bpp
+```sh
+./hello
 ```
 
-Running a B++ program compiles internally and does not leave a generated `.py` file behind.
-
-Compile it to Python:
+On Windows with MinGW:
 
 ```powershell
-bpp .\hello.bpp
+.\bpp.exe .\hello.bpp -o .\hello.c
+gcc .\hello.c -o .\hello.exe
+.\hello.exe
 ```
 
-This creates:
+## Examples
+
+The repository includes:
 
 ```text
-hello.py
+example.bpp
+examples/native_demo.bpp
 ```
 
-Print the generated Python without running it:
-
-```powershell
-bpp --emit .\hello.bpp
-```
-
-## Running `.bpp` Files
-
-After installation, Windows can open `.bpp` files through B++. In `cmd.exe`, `.bpp` files can run directly:
-
-```cmd
-hello.bpp
-```
-
-Double-clicking or opening a `.bpp` file also runs it through the installed B++ runner.
-
-PowerShell is stricter with custom executable extensions, so use:
-
-```powershell
-bpp --run .\hello.bpp
-```
-
-On Linux, run B++ files through `bpp`:
+Compile an example:
 
 ```sh
-bpp --run ./hello.bpp
-```
-
-Executable `.bpp` scripts can use `bpp-run`:
-
-```bpp
-#!/usr/bin/env bpp-run
-say "Hello from B++"
-```
-
-Then run:
-
-```sh
-chmod +x hello.bpp
-./hello.bpp
+bpp example.bpp -o example.c
+cc example.c -o example -lm
+./example
 ```
 
 ## Command Reference
 
-```powershell
-bpp file.bpp                 # compile to file.py
-bpp --run file.bpp           # run without leaving a .py file
-bpp --emit file.bpp          # print generated Python without writing it
-bpp --version                # show compiler version
-bpp --install                # install B++ for the current user
-bpp --uninstall              # remove the current-user install
-bpp doctor                   # check the installation
-bpp updates                  # show update settings
-bpp check-update             # check GitHub for a newer release
-bpp update                   # install the newest release
-bpp --auto                   # enable automatic update checks
-bpp --no-auto                # disable automatic update checks
-bpp-run file.bpp             # Linux helper for executable .bpp scripts
-```
-
-Use `--` to pass arguments to a B++ program when running it:
-
-```powershell
-bpp --run .\app.bpp -- arg1 arg2
+```text
+bpp file.bpp -o file.c       compile B++ to C
+bpp file.bpp                 print generated C to stdout
+bpp --version                show compiler version
+bpp --help                   show help
 ```
 
 ## Syntax Reference
 
-B++ uses one statement per line. Blank lines are ignored. Comments start with `#`, except inside strings.
+B++ uses one statement per line. Blank lines are ignored. Comments start with
+`#`, except inside strings.
 
-Blocks use `:` to start and `end` to close. Indentation is recommended for readability, but `end` controls the block.
+Blocks start with `:` and close with `end`.
 
-### Values And Expressions
+```bpp
+if score > 5:
+    say "high"
+end
+```
 
-B++ expressions compile to Python expressions. This means strings, numbers, lists, dictionaries, math, comparisons, function calls, and indexing work like Python.
+Indentation is recommended for readability, but `end` controls the block.
+
+### Values
+
+B++ supports strings, numbers, booleans, empty values, variables, function calls,
+list literals, math, comparisons, `and`, and `or`.
 
 ```bpp
 "hello"
 42
 3.14
-[1, 2, 3]
-{"name": "B++"}
-score >= 10
-names[0]
-```
-
-Use Python's built-in constants:
-
-```bpp
-True
-False
-None
-```
-
-B++ also accepts simple lowercase values:
-
-```bpp
 true
 false
 nothing
 nil
+[1, 2, 3]
+score >= 10
+name == "Ada"
 ```
 
-When `+` is used with a string, B++ converts both sides to text:
+When `+` is used with text, B++ converts the values to text:
 
 ```bpp
 say "score: " + score
@@ -199,7 +270,7 @@ say "hello" # This part is ignored too.
 
 ### Output
 
-`say value` prints a value.
+`say value` prints a value with a newline.
 
 ```bpp
 say "Hello"
@@ -242,7 +313,7 @@ subtract 2 from score
 multiply score by 3
 ```
 
-`divide name by value` divides a variable. Whole-number results stay as whole numbers.
+`divide name by value` divides a variable.
 
 ```bpp
 divide score by 2
@@ -250,10 +321,11 @@ divide score by 2
 
 ### Lists
 
-Lists use Python-style list values.
+Create a list with `[]` or a list literal.
 
 ```bpp
 set names to []
+set numbers to [1, 2, 3]
 ```
 
 `put value in list` adds a value to the end of a list.
@@ -262,7 +334,7 @@ set names to []
 put "Ada" in names
 ```
 
-`remove value from list` removes a value from a list.
+`remove value from list` removes the first matching value.
 
 ```bpp
 remove "Ada" from names
@@ -276,7 +348,7 @@ empty names
 
 ### Input
 
-`ask prompt into name` asks the user for text and stores the answer.
+`ask prompt into name` asks for text and stores the answer.
 
 ```bpp
 ask "What is your name?" into name
@@ -315,7 +387,8 @@ repeat 3 times:
 end
 ```
 
-`repeat count times as name:` repeats and gives the current turn number, starting at `1`.
+`repeat count times as name:` repeats and gives the current turn number,
+starting at `1`.
 
 ```bpp
 repeat 3 times as turn:
@@ -325,7 +398,7 @@ end
 
 ### For Each Loops
 
-`for each name in list:` loops over each value in a list or other collection.
+`for each name in list:` loops over each value in a list.
 
 ```bpp
 set names to ["Ada", "Bea", "Kai"]
@@ -394,13 +467,15 @@ end
 say square(5)
 ```
 
-`return value` sends a value back from a function. `return` by itself returns `None`.
+`return value` sends a value back from a function.
 
 ```bpp
 def greet(name):
     return "Hi " + name
 end
 ```
+
+`return` by itself returns `nothing`.
 
 ### Files
 
@@ -417,109 +492,39 @@ read "message.txt" into message
 say message
 ```
 
-### Python Imports
+## Native Boundaries
 
-`import module` imports a Python module.
+Native B++ does not support foreign-language imports or passthrough statements.
+Code should be B++ code.
 
-```bpp
-import math
-say math.sqrt(16)
-```
-
-Advanced Python statements that are valid on one line can also pass through to the generated Python.
-
-```bpp
-from random import randint
-say randint(1, 6)
-```
-
-### B++ Modules
-
-`import "name"` imports a B++ module from `name.bpm` or `modules/name.bpm`.
-
-```bpp
-import "tools"
-say tools.double(4)
-```
-
-Inside a `.bpm` file, `export name` changes the name used by the importer.
-
-```bpp
-export helpers
-
-def double(value):
-    return value * 2
-end
-```
-
-Importing that module makes `helpers.double(...)` available.
-
-## Build From Source
-
-Requirements:
-
-- Windows or Linux
-- Python 3.11 or newer
-- PyInstaller
-
-Install PyInstaller:
-
-```powershell
-python -m pip install pyinstaller
-```
-
-Build the compiler:
-
-```powershell
-python .\build_bpp_installer.py
-```
-
-On Windows, the build also creates the setup wizard.
-
-Build outputs on Windows:
-
-```text
-dist\bpp.exe
-dist\B++ Setup.exe
-dist\latest.example.json
-```
-
-Build outputs on Linux:
-
-```text
-dist/bpp
-dist/latest.example.json
-```
-
-`latest.example.json` is a helper file for release metadata. The built-in updater uses GitHub Releases directly.
+The native module system is still being designed.
 
 ## Project Layout
 
 ```text
-b++.py                  B++ compiler source
-bpp_setup.py            Windows setup wizard
-build_bpp_installer.py  release build script
-dist/                   generated release artifacts
+bpp.c                     native B++ compiler
+setup.c                   native Windows setup wizard
+Makefile                  Unix-style build file
+build.bat                 Windows build helper
+build.sh                  shell build helper
+example.bpp               example B++ program
+examples/native_demo.bpp  native compiler demo
+DESIGN.md                 language design rules
+CHANGELOG.md              update history
 ```
 
 ## Development
 
-Run the compiler smoke test:
+Build the compiler:
 
-```powershell
-python .\b++.py --self-test
+```sh
+make
 ```
 
-Compile-check the Python sources:
+Compile the demo:
 
-```powershell
-python -m py_compile .\b++.py .\bpp_setup.py .\build_bpp_installer.py
-```
-
-Run a B++ program from stdin:
-
-```powershell
-@'
-say "Hello from stdin"
-'@ | python .\b++.py --run -
+```sh
+./bpp examples/native_demo.bpp -o native_demo.c
+cc native_demo.c -o native_demo -lm
+./native_demo
 ```
