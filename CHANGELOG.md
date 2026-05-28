@@ -1,8 +1,6 @@
 # Changelog
 
-## B++ 4.2.1
-
-B++ 4.2.1 adds the Ruby/Lua-style syntax pack, the built-in `os` module, and one-step run mode.
+## B++ Next
 
 - Added Ruby/Lua-style assignment with `name = value`.
 - Added `const name = value` with compile-time protection against later changes.
@@ -11,8 +9,6 @@ B++ 4.2.1 adds the Ruby/Lua-style syntax pack, the built-in `os` module, and one
 - Added Lua-style `--` comments.
 - Added the built-in `os` module enabled with `<bpp unpackage os>`.
 - Added OS commands for folders, files, environment variables, shell command capture, exit codes, process IDs, process killing, and sleeping.
-- Added one-step run mode: `bpp file.bpp` now compiles through C and runs the program.
-- Added `--emit-c` for printing generated C and `--exe` for building native executables.
 
 ## B++ 4.2
 
