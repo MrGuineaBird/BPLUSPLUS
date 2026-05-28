@@ -1,0 +1,49 @@
+<bpp unpackage os>
+
+-- Built-in OS module demo
+
+os current folder into cwd
+os home folder into home
+os temp folder into temp
+
+say "cwd: " + cwd
+say "home: " + home
+say "temp: " + temp
+
+os create folder "bpp_os_demo"
+write "hello from B++" to "bpp_os_demo/source.txt"
+
+os file exists "bpp_os_demo/source.txt" into source_exists
+say "source exists: " + source_exists
+
+os copy file "bpp_os_demo/source.txt" to "bpp_os_demo/copy.txt"
+os move file "bpp_os_demo/copy.txt" to "bpp_os_demo/moved.txt"
+
+os list folder "bpp_os_demo" into files
+for file in files:
+    say "demo file: " + file
+end
+
+os env "PATH" into path
+has_path = path != ""
+say "PATH has text: " + has_path
+
+os set env "BPP_MODE" to "dev"
+os env "BPP_MODE" into mode
+say "mode: " + mode
+os remove env "BPP_MODE"
+
+os run "echo bpp" into output
+os exit code into code
+say "run output: " + output
+say "run code: " + code
+
+os process id into pid
+say "pid: " + pid
+
+os sleep 10 milliseconds
+os last error into error
+say "last error: " + error
+
+os delete file "bpp_os_demo/source.txt"
+os delete folder "bpp_os_demo" recursively

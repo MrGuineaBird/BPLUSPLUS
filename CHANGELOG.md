@@ -1,5 +1,26 @@
 # Changelog
 
+## B++ Next
+
+- Added Ruby/Lua-style assignment with `name = value`.
+- Added `const name = value` with compile-time protection against later changes.
+- Added `function`, `elseif`, `unless`, `until`, `for name in list`, range `for` loops, `break`, and `continue`.
+- Added `not`, `%`, and `^` expression operators.
+- Added Lua-style `--` comments.
+- Added the built-in `os` module enabled with `<bpp unpackage os>`.
+- Added OS commands for folders, files, environment variables, shell command capture, exit codes, process IDs, process killing, and sleeping.
+
+## B++ 4.2
+
+B++ 4.2 improves native compiler errors.
+
+- Added reserved name protection for variables, functions, function parameters, and loop variables.
+- Reserved C/native runtime names such as `int`, `double`, `main`, and `bpp_*` are blocked before C code is generated.
+- Reserved-name errors now explain the exact bad name and say to choose a different name.
+- Added recovery for bad block headers so one reserved function or loop name does not cause noisy follow-up errors from the skipped block body.
+- Documented reserved-name behavior in the README.
+- Started the fast numeric compiler backend as unreleased/internal work.
+
 ## B++ 4.1
 
 B++ 4.1 adds the native Windows update path for the C version of B++.

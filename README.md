@@ -13,7 +13,7 @@ B++ -> C -> native executable
 
 ## Status
 
-B++ version: `4.1`
+B++ version: `4.2`
 
 Current compiler:
 
@@ -22,6 +22,7 @@ Current compiler:
 - input: `.bpp`
 - output: `.c`
 - runtime: generated C
+- fast path: numeric programs use a tokenizer, parser, AST, type inference, and direct C numbers
 
 B++ does not require another scripting language to compile B++ code.
 
@@ -251,7 +252,11 @@ The repository includes:
 
 ```text
 example.bpp
+examples/fast_math.bpp
 examples/native_demo.bpp
+examples/ruby_lua_core.bpp
+examples/os_module.bpp
+examples/everything_showcase.bpp
 ```
 
 Compile an example:
@@ -261,6 +266,38 @@ bpp example.bpp -o example.c
 cc example.c -o example -lm
 ./example
 ```
+
+## Fast Numeric Backend
+
+B++ now has a fast numeric compiler path for programs that only use numeric
+code. That path reads the whole program, tokenizes expressions, builds an AST,
+infers numeric variables, and emits direct C `double` values instead of boxed
+runtime values.
+
+This kind of program uses the fast backend automatically:
+
+```bpp
+set total to 0
+
+repeat 5 times as i:
+    add i * 2 to total
+end
+
+if total == 30:
+    say total
+end
+```
+
+The generated C uses plain numeric variables:
+
+```c
+double total = 0.0;
+double i = 0.0;
+```
+
+Programs that use strings, lists, files, functions, or other dynamic features
+still compile through the normal B++ runtime backend. This keeps B++ working
+while the fast compiler grows feature by feature.
 
 ## Command Reference
 
@@ -279,7 +316,7 @@ bpp --no-auto                disable automatic update checks
 ## Syntax Reference
 
 B++ uses one statement per line. Blank lines are ignored. Comments start with
-`#`, except inside strings.
+`#` or `--`, except inside strings.
 
 Blocks start with `:` and close with `end`.
 
@@ -320,6 +357,7 @@ say "score: " + score
 ```bpp
 # This line is ignored.
 say "hello" # This part is ignored too.
+-- Lua-style comments are also ignored.
 ```
 
 ### Output
@@ -340,11 +378,20 @@ say "++"
 
 ### Variables
 
-`set name to value` stores a value.
+`set name to value` stores a value. Ruby/Lua-style assignment is also supported.
 
 ```bpp
 set name to "B++"
 set score to 10
+
+name = "B++"
+score = 10
+```
+
+`const name = value` creates a value that cannot be changed later.
+
+```bpp
+const max_score = 100
 ```
 
 ### Math Commands
@@ -371,6 +418,14 @@ multiply score by 3
 
 ```bpp
 divide score by 2
+```
+
+Expressions also support `not`, `%`, and `^`.
+
+```bpp
+say not ready
+say score % 2
+say 2 ^ 8
 ```
 
 ### Lists
@@ -419,15 +474,24 @@ if score >= 10:
 end
 ```
 
-Use `elif condition:` for another condition and `else:` for the fallback.
+Use `elif condition:` or `elseif condition:` for another condition and `else:`
+for the fallback.
 
 ```bpp
 if score > 10:
     say "high"
-elif score == 10:
+elseif score == 10:
     say "exact"
 else:
     say "low"
+end
+```
+
+`unless condition:` runs a block when a condition is false.
+
+```bpp
+unless ready:
+    say "not ready"
 end
 ```
 
@@ -452,13 +516,36 @@ end
 
 ### For Each Loops
 
-`for each name in list:` loops over each value in a list.
+`for each name in list:` loops over each value in a list. `for name in list:`
+is the Ruby/Lua-style spelling.
 
 ```bpp
 set names to ["Ada", "Bea", "Kai"]
 
 for each name in names:
     say "hi " + name
+end
+
+for name in names:
+    say "hi " + name
+end
+```
+
+### Range For Loops
+
+`for name from start to end:` counts through a numeric range.
+
+```bpp
+for i from 1 to 10:
+    say i
+end
+
+for i from 10 down to 1:
+    say i
+end
+
+for i from 0 to 100 step 5:
+    say i
 end
 ```
 
@@ -472,6 +559,15 @@ set count to 0
 while count < 3:
     say count
     add 1 to count
+end
+```
+
+`until condition:` repeats while a condition is false.
+
+```bpp
+until ready:
+    ask "ready?" into answer
+    ready = answer == "yes"
 end
 ```
 
@@ -501,6 +597,14 @@ if done:
 end
 ```
 
+`break` is the Ruby/Lua-style spelling.
+
+```bpp
+if done:
+    break
+end
+```
+
 `next loop` skips to the next turn of the nearest loop.
 
 ```bpp
@@ -509,13 +613,25 @@ if name == "":
 end
 ```
 
+`continue` is the Ruby/Lua-style spelling.
+
+```bpp
+if name == "":
+    continue
+end
+```
+
 ### Functions
 
-`def name(args):` creates a function.
+`def name(args):` creates a function. `function name(args):` is also supported.
 
 ```bpp
 def square(x):
     return x * x
+end
+
+function cube(x):
+    return x * x * x
 end
 
 say square(5)
@@ -546,12 +662,76 @@ read "message.txt" into message
 say message
 ```
 
+### Built-In OS Module
+
+`<bpp unpackage os>` enables the built-in `os` module. The directive must be
+the first non-empty, non-comment line in the script.
+
+```bpp
+<bpp unpackage os>
+
+os current folder into cwd
+os home folder into home
+os temp folder into temp
+
+os file exists "notes.txt" into found
+os folder exists "build" into found
+os list folder "." into files
+
+os create folder "build"
+os copy file "a.txt" to "build/a.txt"
+os move file "old.txt" to "archive/old.txt"
+os delete file "temp.txt"
+os delete folder "old_build" recursively
+
+os env "PATH" into path
+os set env "BPP_MODE" to "dev"
+os remove env "BPP_MODE"
+
+os run "git status" into output
+os exit code into code
+os last error into error
+
+os process id into pid
+os sleep 500 milliseconds
+```
+
+Folder deletion is intentionally explicit: use `recursively` when deleting a
+folder tree.
+
+### Reserved Names
+
+Some names are reserved by B++, C, or the native runtime. They cannot be used as
+variables, function names, function parameters, or loop variables.
+
+```bpp
+set int to 5
+```
+
+```text
+[Line 1] "int" is reserved.
+    --> set int to 5
+    expected: choose a different name
+```
+
+```bpp
+def double(value):
+    return value * 2
+end
+```
+
+```text
+[Line 1] "double" is reserved.
+    --> def double(value):
+    expected: choose a different name
+```
+
 ## Native Boundaries
 
 Native B++ does not support foreign-language imports or passthrough statements.
 Code should be B++ code.
 
-The native module system is still being designed.
+Built-in modules use B++ directives such as `<bpp unpackage os>`.
 
 ## Project Layout
 
@@ -563,7 +743,11 @@ Makefile                  Unix-style build file
 build.bat                 Windows build helper
 build.sh                  shell build helper
 example.bpp               example B++ program
+examples/fast_math.bpp    fast numeric backend demo
 examples/native_demo.bpp  native compiler demo
+examples/ruby_lua_core.bpp Ruby/Lua-style syntax demo
+examples/os_module.bpp     built-in os module demo
+examples/everything_showcase.bpp full language showcase
 DESIGN.md                 language design rules
 CHANGELOG.md              update history
 ```

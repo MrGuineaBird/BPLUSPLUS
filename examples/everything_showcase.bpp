@@ -1,0 +1,185 @@
+# B++ Everything Showcase
+-- A tiny terminal mission that uses the current B++ language surface.
+
+<bpp unpackage os>
+
+const mission_name = "Operation Starpath"
+const max_signal = 100
+
+function badge(name):
+    return "[" + name + "]"
+end
+
+function square(x):
+    return x ^ 2
+end
+
+say "================================"
+say mission_name
+say "================================"
+say "Pilot name?" without newline
+ask "" into pilot
+say ""
+
+unless pilot != "":
+    pilot = "anonymous pilot"
+end
+
+set signal to 12
+add 8 to signal
+multiply signal by 3
+subtract 5 from signal
+divide signal by 2
+
+score = square(3) + signal
+remainder = score % 2
+ready = false
+
+if score >= max_signal:
+    say "Signal is legendary."
+elseif remainder == 0:
+    say "Signal is even and stable."
+else:
+    say "Signal is odd and interesting."
+end
+
+unless ready:
+    say "Warming up systems for " + pilot
+end
+
+systems = []
+put "navigation" in systems
+put "comms" in systems
+put "engines" in systems
+put "old relay" in systems
+remove "old relay" from systems
+
+say ""
+say "Systems online:"
+
+for each system in systems:
+    say "- " + system
+end
+
+say ""
+say "Countdown:"
+
+for tick from 5 down to 1:
+    say tick
+end
+
+say "Calibration sweep:"
+
+for step from 0 to 10 step 5:
+    say "step " + step
+end
+
+say "Repeat loop check:"
+
+repeat 3 times as turn:
+    if turn == 2:
+        next loop
+    end
+
+    say "turn " + turn
+end
+
+repeat 2 times:
+    say "pulse"
+end
+
+say "For-in crew roll:"
+
+crew = ["Ada", "Bea", "Kai"]
+for member in crew:
+    if member == "Bea":
+        continue
+    end
+
+    say "crew: " + member
+end
+
+count = 0
+
+while count < 2:
+    add 1 to count
+    say "while count " + count
+end
+
+until ready:
+    ready = true
+    say "until loop armed"
+end
+
+forever:
+    say "forever loop exits safely"
+    stop loop
+end
+
+forever:
+    say "break alias exits safely"
+    break
+end
+
+scratch = [1, 2, 3]
+empty scratch
+
+os current folder into cwd
+os home folder into home
+os temp folder into temp
+os process id into pid
+
+say ""
+say "Computer:"
+say "cwd: " + cwd
+say "home: " + home
+say "temp: " + temp
+say "pid: " + pid
+
+os create folder "bpp_showcase_workspace"
+write "mission=" + mission_name + "\npilot=" + pilot + "\nscore=" + score to "bpp_showcase_workspace/report.txt"
+read "bpp_showcase_workspace/report.txt" into report
+
+say ""
+say "Report:"
+say report
+
+os file exists "bpp_showcase_workspace/report.txt" into report_exists
+os folder exists "bpp_showcase_workspace" into folder_exists
+say "report exists: " + report_exists
+say "folder exists: " + folder_exists
+
+os copy file "bpp_showcase_workspace/report.txt" to "bpp_showcase_workspace/report_copy.txt"
+os move file "bpp_showcase_workspace/report_copy.txt" to "bpp_showcase_workspace/archive.txt"
+os list folder "bpp_showcase_workspace" into files
+
+say "Workspace files:"
+for file in files:
+    say "- " + file
+end
+
+os env "PATH" into path
+has_path = path != ""
+say "PATH available: " + has_path
+
+os set env "BPP_SHOWCASE" to "running"
+os env "BPP_SHOWCASE" into mode
+say "showcase env: " + mode
+os remove env "BPP_SHOWCASE"
+
+os run "echo B++ says hello from the shell" into shell_output
+os exit code into code
+say "shell output: " + shell_output
+say "shell exit code: " + code
+
+os sleep 25 milliseconds
+os last error into last_error
+say "last os error: " + last_error
+
+-- os kill process pid
+-- The command exists, but the showcase does not use it because it would stop itself.
+
+os delete file "bpp_showcase_workspace/report.txt"
+os delete folder "bpp_showcase_workspace" recursively
+
+say badge("mission complete") + " by " + pilot

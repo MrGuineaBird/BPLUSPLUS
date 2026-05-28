@@ -1,0 +1,9 @@
+set total to 0
+
+repeat 5 times as i:
+    add i * 2 to total
+end
+
+if total == 30:
+    say total
+end

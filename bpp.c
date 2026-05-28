@@ -7,18 +7,21 @@
 
     Supported in this native compiler:
     - say
-    - set
+    - set and name = value
+    - const
     - add/subtract/multiply/divide
     - lists: [], put/remove/empty
-    - if/elif/else/end
+    - if/elif/elseif/else/end
+    - unless
     - repeat, repeat as
-    - for each
-    - while, forever
-    - stop loop, next loop
+    - for each, for in, range for
+    - while, until, forever
+    - stop loop, next loop, break, continue
     - true/false/nothing/nil
 
-    - functions and return
+    - def/function and return
     - ask/read/write
+    - built-in os module with <bpp unpackage os>
 
     Deliberately not supported in native mode:
     - foreign-language imports
@@ -69,11 +72,16 @@ typedef struct {
     StringBuilder *body;
     NameList globals;
     NameList locals;
+    NameList global_consts;
+    NameList local_consts;
     NameList *names;
+    NameList *consts;
     int indent;
     int temp_counter;
     int had_error;
     int in_function;
+    int os_enabled;
+    int skip_depth;
     BlockKind blocks[256];
     int block_count;
 } Compiler;
@@ -285,6 +293,49 @@ static int is_identifier(const char *text) {
     return 1;
 }
 
+static int string_in_list(const char *text, const char *const *items, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(text, items[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int is_reserved_identifier(const char *name) {
+    static const char *const reserved_words[] = {
+        "add", "and", "as", "ask", "break", "case", "char", "const",
+        "continue", "default", "def", "divide", "do", "double", "elif",
+        "elseif", "else", "empty", "end", "enum", "extern", "false", "float",
+        "for", "forever", "goto", "if", "import", "in", "int", "long",
+        "loop", "multiply", "next", "nil", "not", "nothing", "os", "read",
+        "register", "remove", "repeat", "return", "say", "set", "short",
+        "signed", "sizeof", "static", "stop", "struct", "subtract",
+        "switch", "times", "true", "typedef", "union", "unless",
+        "unsigned", "until", "unpackage", "void", "volatile", "while",
+        "write", "function",
+
+        "BPP_BOOL", "BPP_LIST", "BPP_NIL", "BPP_NUMBER", "BPP_STRING",
+        "BppList", "BppType", "BppValue", "FILE", "NULL", "main",
+        "size_t", "stdin", "stdout",
+
+        "calloc", "exit", "fabs", "fclose", "fflush", "fgetc", "fgets",
+        "fopen", "fprintf", "fputc", "fputs", "fread", "free", "fseek",
+        "ftell", "fwrite", "malloc", "memcpy", "memmove", "printf",
+        "realloc", "rewind", "snprintf", "strcat", "strcmp", "strcpy",
+        "strlen"
+    };
+
+    if (string_in_list(name, reserved_words, sizeof(reserved_words) / sizeof(reserved_words[0]))) {
+        return 1;
+    }
+
+    return starts_with(name, "__bpp_") ||
+           starts_with(name, "bpp_") ||
+           starts_with(name, "Bpp") ||
+           starts_with(name, "BPP_");
+}
+
 static char *slice_trim(const char *text, size_t start, size_t end) {
     while (start < end && isspace((unsigned char)text[start])) {
         start++;
@@ -327,7 +378,7 @@ static char *strip_comment_copy(const char *line) {
             sb_append(&out, tmp);
             continue;
         }
-        if (ch == '#' && !quote) {
+        if ((ch == '#' || (ch == '-' && line[i + 1] == '-')) && !quote) {
             break;
         }
         char tmp[2] = {ch, '\0'};
@@ -392,6 +443,55 @@ static int partition_keyword(const char *text, const char *keyword, char **left,
     *left = slice_trim(text, 0, (size_t)pos);
     *right = slice_trim(text, (size_t)pos + strlen(keyword), strlen(text));
     return 1;
+}
+
+static int partition_assignment(const char *text, char **left, char **right) {
+    int quote = 0;
+    int escaped = 0;
+    int depth = 0;
+    for (size_t i = 0; text[i]; i++) {
+        char ch = text[i];
+        if (escaped) {
+            escaped = 0;
+            continue;
+        }
+        if (quote && ch == '\\') {
+            escaped = 1;
+            continue;
+        }
+        if (ch == '\'' || ch == '"') {
+            if (!quote) {
+                quote = ch;
+            } else if (quote == ch) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (quote) {
+            continue;
+        }
+        if (ch == '(' || ch == '[' || ch == '{') {
+            depth++;
+            continue;
+        }
+        if (ch == ')' || ch == ']' || ch == '}') {
+            if (depth > 0) {
+                depth--;
+            }
+            continue;
+        }
+        if (depth == 0 && ch == '=') {
+            char prev = i > 0 ? text[i - 1] : '\0';
+            char next = text[i + 1];
+            if (prev == '=' || prev == '!' || prev == '<' || prev == '>' || next == '=') {
+                continue;
+            }
+            *left = slice_trim(text, 0, i);
+            *right = slice_trim(text, i + 1, strlen(text));
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int split_top_level_args(const char *text, char ***out_args, size_t *out_count) {
@@ -537,6 +637,8 @@ static char *transpile_expr(const char *expr) {
         {"-", "bpp_sub"},
         {"*", "bpp_mul"},
         {"/", "bpp_div"},
+        {"%", "bpp_mod"},
+        {"^", "bpp_pow"},
     };
 
     for (size_t i = 0; i < sizeof(comparisons) / sizeof(comparisons[0]); i++) {
@@ -548,6 +650,15 @@ static char *transpile_expr(const char *expr) {
     }
 
     size_t len = strlen(text);
+    if (starts_with(text, "not ")) {
+        char *body = slice_trim(text, 4, len);
+        char *body_c = transpile_expr(body);
+        char *out = format_text("bpp_not(%s)", body_c);
+        free(body);
+        free(body_c);
+        free(copy);
+        return out;
+    }
     if (strcmp(text, "true") == 0 || strcmp(text, "True") == 0) {
         free(copy);
         return xstrdup("bpp_bool(1)");
@@ -647,11 +758,16 @@ static void compiler_init(Compiler *compiler, const char *source_path) {
     compiler->body = &compiler->main_body;
     names_init(&compiler->globals);
     names_init(&compiler->locals);
+    names_init(&compiler->global_consts);
+    names_init(&compiler->local_consts);
     compiler->names = &compiler->globals;
+    compiler->consts = &compiler->global_consts;
     compiler->indent = 1;
     compiler->temp_counter = 0;
     compiler->had_error = 0;
     compiler->in_function = 0;
+    compiler->os_enabled = 0;
+    compiler->skip_depth = 0;
     compiler->block_count = 0;
 }
 
@@ -660,6 +776,8 @@ static void compiler_free(Compiler *compiler) {
     sb_free(&compiler->functions_body);
     names_free(&compiler->globals);
     names_free(&compiler->locals);
+    names_free(&compiler->global_consts);
+    names_free(&compiler->local_consts);
 }
 
 static void emit_indent(Compiler *compiler) {
@@ -695,6 +813,56 @@ static void compile_error(Compiler *compiler, int line_no, const char *line, con
     compiler->had_error = 1;
 }
 
+static void compile_reserved_name_error(Compiler *compiler, int line_no, const char *line, const char *name) {
+    char *message = format_text("\"%s\" is reserved.", name);
+    compile_error(compiler, line_no, line, message, "choose a different name");
+    free(message);
+}
+
+static int check_name_allowed(Compiler *compiler, int line_no, const char *line, const char *name) {
+    if (is_reserved_identifier(name)) {
+        compile_reserved_name_error(compiler, line_no, line, name);
+        return 0;
+    }
+    return 1;
+}
+
+static int is_const_name(Compiler *compiler, const char *name) {
+    return names_contains(compiler->consts, name) ||
+           (compiler->consts != &compiler->global_consts && names_contains(&compiler->global_consts, name));
+}
+
+static int check_name_writable(Compiler *compiler, int line_no, const char *line, const char *name) {
+    if (is_const_name(compiler, name)) {
+        compile_error(compiler, line_no, line, "Cannot change a const value.", "choose a different name or remove const");
+        return 0;
+    }
+    return 1;
+}
+
+static void skip_bad_block(Compiler *compiler) {
+    compiler->skip_depth = 1;
+}
+
+static int statement_starts_block(const char *line) {
+    if (!ends_with(line, ":")) {
+        return 0;
+    }
+    if (starts_with(line, "elif ") || starts_with(line, "elseif ") || strcmp(line, "else:") == 0) {
+        return 0;
+    }
+    return starts_with(line, "def ") ||
+           starts_with(line, "function ") ||
+           starts_with(line, "if ") ||
+           starts_with(line, "unless ") ||
+           starts_with(line, "while ") ||
+           starts_with(line, "until ") ||
+           starts_with(line, "repeat ") ||
+           starts_with(line, "for each ") ||
+           starts_with(line, "for ") ||
+           strcmp(line, "forever:") == 0;
+}
+
 static void push_block(Compiler *compiler, BlockKind kind) {
     if (compiler->block_count < (int)(sizeof(compiler->blocks) / sizeof(compiler->blocks[0]))) {
         compiler->blocks[compiler->block_count++] = kind;
@@ -716,12 +884,237 @@ static void declare_or_set(Compiler *compiler, const char *name, const char *exp
     }
 }
 
+static void declare_const(Compiler *compiler, const char *name, const char *expr_c) {
+    names_add(compiler->names, name);
+    names_add(compiler->consts, name);
+    emit_line(compiler, "BppValue %s = %s;", name, expr_c);
+}
+
 static char *without_trailing_colon(const char *line) {
     size_t len = strlen(line);
     if (len > 0 && line[len - 1] == ':') {
         return slice_trim(line, 0, len - 1);
     }
     return xstrdup(line);
+}
+
+static void assign_result_to_name(Compiler *compiler, int line_no, const char *line, const char *name, const char *expr_c, const char *expected) {
+    if (!is_identifier(name)) {
+        compile_error(compiler, line_no, line, "Invalid target name.", expected);
+    } else if (check_name_allowed(compiler, line_no, line, name) &&
+               check_name_writable(compiler, line_no, line, name)) {
+        declare_or_set(compiler, name, expr_c);
+    }
+}
+
+static int compile_os_statement(Compiler *compiler, int line_no, const char *line) {
+    if (!compiler->os_enabled) {
+        compile_error(compiler, line_no, line, "The os module is not unpackaged.", "start the script with <bpp unpackage os>");
+        return 1;
+    }
+
+    const char *body = line + 3;
+
+    const struct {
+        const char *prefix;
+        const char *call;
+        const char *expected;
+    } no_arg_results[] = {
+        {"current folder into ", "bpp_os_current_folder()", "os current folder into name"},
+        {"home folder into ", "bpp_os_home_folder()", "os home folder into name"},
+        {"temp folder into ", "bpp_os_temp_folder()", "os temp folder into name"},
+        {"exit code into ", "bpp_os_exit_code()", "os exit code into name"},
+        {"last error into ", "bpp_os_last_error()", "os last error into name"},
+        {"process id into ", "bpp_os_process_id()", "os process id into name"}
+    };
+
+    for (size_t i = 0; i < sizeof(no_arg_results) / sizeof(no_arg_results[0]); i++) {
+        if (starts_with(body, no_arg_results[i].prefix)) {
+            char *name = slice_trim(body, strlen(no_arg_results[i].prefix), strlen(body));
+            assign_result_to_name(compiler, line_no, line, name, no_arg_results[i].call, no_arg_results[i].expected);
+            free(name);
+            return 1;
+        }
+    }
+
+    const struct {
+        const char *prefix;
+        const char *call;
+        const char *expected;
+    } expr_results[] = {
+        {"file exists ", "bpp_os_file_exists", "os file exists path into name"},
+        {"folder exists ", "bpp_os_folder_exists", "os folder exists path into name"},
+        {"list folder ", "bpp_os_list_folder", "os list folder path into name"},
+        {"env ", "bpp_os_env", "os env name into target"},
+        {"run ", "bpp_os_run", "os run command into output"}
+    };
+
+    for (size_t i = 0; i < sizeof(expr_results) / sizeof(expr_results[0]); i++) {
+        if (starts_with(body, expr_results[i].prefix)) {
+            char *rest = slice_trim(body, strlen(expr_results[i].prefix), strlen(body));
+            char *expr = NULL;
+            char *name = NULL;
+            if (!partition_keyword(rest, " into ", &expr, &name)) {
+                compile_error(compiler, line_no, line, "Invalid os syntax.", expr_results[i].expected);
+            } else {
+                char *expr_c = transpile_expr(expr);
+                char *call_c = format_text("%s(%s)", expr_results[i].call, expr_c);
+                assign_result_to_name(compiler, line_no, line, name, call_c, expr_results[i].expected);
+                free(expr_c);
+                free(call_c);
+            }
+            free(rest);
+            free(expr);
+            free(name);
+            return 1;
+        }
+    }
+
+    if (starts_with(body, "create folder ")) {
+        char *path = slice_trim(body, 14, strlen(body));
+        if (!path[0]) {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os create folder path");
+        } else {
+            char *path_c = transpile_expr(path);
+            emit_line(compiler, "bpp_os_create_folder(%s);", path_c);
+            free(path_c);
+        }
+        free(path);
+        return 1;
+    }
+
+    if (starts_with(body, "copy file ")) {
+        char *rest = slice_trim(body, 10, strlen(body));
+        char *from = NULL;
+        char *to = NULL;
+        if (!partition_keyword(rest, " to ", &from, &to)) {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os copy file from to target");
+        } else {
+            char *from_c = transpile_expr(from);
+            char *to_c = transpile_expr(to);
+            emit_line(compiler, "bpp_os_copy_file(%s, %s);", from_c, to_c);
+            free(from_c);
+            free(to_c);
+        }
+        free(rest);
+        free(from);
+        free(to);
+        return 1;
+    }
+
+    if (starts_with(body, "move file ")) {
+        char *rest = slice_trim(body, 10, strlen(body));
+        char *from = NULL;
+        char *to = NULL;
+        if (!partition_keyword(rest, " to ", &from, &to)) {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os move file from to target");
+        } else {
+            char *from_c = transpile_expr(from);
+            char *to_c = transpile_expr(to);
+            emit_line(compiler, "bpp_os_move_file(%s, %s);", from_c, to_c);
+            free(from_c);
+            free(to_c);
+        }
+        free(rest);
+        free(from);
+        free(to);
+        return 1;
+    }
+
+    if (starts_with(body, "delete file ")) {
+        char *path = slice_trim(body, 12, strlen(body));
+        if (!path[0]) {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os delete file path");
+        } else {
+            char *path_c = transpile_expr(path);
+            emit_line(compiler, "bpp_os_delete_file(%s);", path_c);
+            free(path_c);
+        }
+        free(path);
+        return 1;
+    }
+
+    if (starts_with(body, "delete folder ")) {
+        char *rest = slice_trim(body, 14, strlen(body));
+        char *path = NULL;
+        char *tail = NULL;
+        if (!partition_keyword(rest, " recursively", &path, &tail) || tail[0] != '\0') {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os delete folder path recursively");
+        } else {
+            char *path_c = transpile_expr(path);
+            emit_line(compiler, "bpp_os_delete_folder_recursive(%s);", path_c);
+            free(path_c);
+        }
+        free(rest);
+        free(path);
+        free(tail);
+        return 1;
+    }
+
+    if (starts_with(body, "set env ")) {
+        char *rest = slice_trim(body, 8, strlen(body));
+        char *name = NULL;
+        char *value = NULL;
+        if (!partition_keyword(rest, " to ", &name, &value)) {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os set env name to value");
+        } else {
+            char *name_c = transpile_expr(name);
+            char *value_c = transpile_expr(value);
+            emit_line(compiler, "bpp_os_set_env(%s, %s);", name_c, value_c);
+            free(name_c);
+            free(value_c);
+        }
+        free(rest);
+        free(name);
+        free(value);
+        return 1;
+    }
+
+    if (starts_with(body, "remove env ")) {
+        char *name = slice_trim(body, 11, strlen(body));
+        if (!name[0]) {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os remove env name");
+        } else {
+            char *name_c = transpile_expr(name);
+            emit_line(compiler, "bpp_os_remove_env(%s);", name_c);
+            free(name_c);
+        }
+        free(name);
+        return 1;
+    }
+
+    if (starts_with(body, "kill process ")) {
+        char *pid = slice_trim(body, 13, strlen(body));
+        if (!pid[0]) {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os kill process pid");
+        } else {
+            char *pid_c = transpile_expr(pid);
+            emit_line(compiler, "bpp_os_kill_process(%s);", pid_c);
+            free(pid_c);
+        }
+        free(pid);
+        return 1;
+    }
+
+    if (starts_with(body, "sleep ")) {
+        char *rest = slice_trim(body, 6, strlen(body));
+        char *amount = NULL;
+        char *tail = NULL;
+        if (!partition_keyword(rest, " milliseconds", &amount, &tail) || tail[0] != '\0') {
+            compile_error(compiler, line_no, line, "Invalid os syntax.", "os sleep amount milliseconds");
+        } else {
+            char *amount_c = transpile_expr(amount);
+            emit_line(compiler, "bpp_os_sleep_ms(%s);", amount_c);
+            free(amount_c);
+        }
+        free(rest);
+        free(amount);
+        free(tail);
+        return 1;
+    }
+
+    compile_error(compiler, line_no, line, "Unknown os command.", "use an os command from the B++ syntax reference");
+    return 1;
 }
 
 static void compile_statement(Compiler *compiler, int line_no, const char *line) {
@@ -739,17 +1132,21 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         if (kind == BLOCK_FUNCTION) {
             compiler->body = &compiler->main_body;
             compiler->names = &compiler->globals;
+            compiler->consts = &compiler->global_consts;
             compiler->in_function = 0;
             compiler->indent = 1;
             names_free(&compiler->locals);
             names_init(&compiler->locals);
+            names_free(&compiler->local_consts);
+            names_init(&compiler->local_consts);
         }
         return;
     }
 
-    if (starts_with(line, "elif ") && ends_with(line, ":")) {
+    if ((starts_with(line, "elif ") || starts_with(line, "elseif ")) && ends_with(line, ":")) {
         char *inner = without_trailing_colon(line);
-        char *cond = slice_trim(inner, 5, strlen(inner));
+        size_t keyword_len = starts_with(line, "elseif ") ? 7 : 5;
+        char *cond = slice_trim(inner, keyword_len, strlen(inner));
         char *expr_c = transpile_expr(cond);
         compiler->indent--;
         emit_line(compiler, "} else if (bpp_truthy(%s)) {", expr_c);
@@ -767,21 +1164,31 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         return;
     }
 
-    if (starts_with(line, "def ") && ends_with(line, ":")) {
+    if (starts_with(line, "os ")) {
+        compile_os_statement(compiler, line_no, line);
+        return;
+    }
+
+    if ((starts_with(line, "def ") || starts_with(line, "function ")) && ends_with(line, ":")) {
         if (compiler->in_function) {
             compile_error(compiler, line_no, line, "Nested functions are not supported in native B++ yet.", NULL);
+            skip_bad_block(compiler);
             return;
         }
         if (compiler->indent != 1 || compiler->block_count != 0) {
             compile_error(compiler, line_no, line, "Functions must be defined at the top level in native B++.", NULL);
+            skip_bad_block(compiler);
             return;
         }
         char *inner = without_trailing_colon(line);
-        char *signature = slice_trim(inner, 4, strlen(inner));
+        size_t keyword_len = starts_with(line, "function ") ? 9 : 4;
+        const char *expected_signature = starts_with(line, "function ") ? "function name(arg, arg):" : "def name(arg, arg):";
+        char *signature = slice_trim(inner, keyword_len, strlen(inner));
         char *open = strchr(signature, '(');
         char *close = strrchr(signature, ')');
         if (!open || !close || close < open) {
-            compile_error(compiler, line_no, line, "Invalid function syntax.", "def name(arg, arg):");
+            compile_error(compiler, line_no, line, "Invalid function syntax.", expected_signature);
+            skip_bad_block(compiler);
             free(inner);
             free(signature);
             return;
@@ -789,7 +1196,49 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = slice_trim(signature, 0, (size_t)(open - signature));
         char *params = slice_trim(signature, (size_t)(open - signature) + 1, (size_t)(close - signature));
         if (!is_identifier(name)) {
-            compile_error(compiler, line_no, line, "Invalid function name.", "def name(arg, arg):");
+            compile_error(compiler, line_no, line, "Invalid function name.", expected_signature);
+            skip_bad_block(compiler);
+            free(inner);
+            free(signature);
+            free(name);
+            free(params);
+            return;
+        }
+
+        if (!check_name_allowed(compiler, line_no, line, name)) {
+            skip_bad_block(compiler);
+            free(inner);
+            free(signature);
+            free(name);
+            free(params);
+            return;
+        }
+
+        char **args = NULL;
+        size_t arg_count = 0;
+        split_top_level_args(params, &args, &arg_count);
+
+        NameList seen_params;
+        names_init(&seen_params);
+        int param_error = 0;
+        for (size_t i = 0; i < arg_count; i++) {
+            if (!is_identifier(args[i])) {
+                compile_error(compiler, line_no, line, "Invalid function parameter.", expected_signature);
+                param_error = 1;
+            } else if (is_reserved_identifier(args[i])) {
+                compile_reserved_name_error(compiler, line_no, line, args[i]);
+                param_error = 1;
+            } else if (names_contains(&seen_params, args[i])) {
+                compile_error(compiler, line_no, line, "Duplicate function parameter.", "use each parameter name once");
+                param_error = 1;
+            } else {
+                names_add(&seen_params, args[i]);
+            }
+        }
+        names_free(&seen_params);
+        if (param_error) {
+            skip_bad_block(compiler);
+            free_split_args(args, arg_count);
             free(inner);
             free(signature);
             free(name);
@@ -803,15 +1252,12 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         compiler->indent = 0;
         names_free(&compiler->locals);
         names_init(&compiler->locals);
+        names_free(&compiler->local_consts);
+        names_init(&compiler->local_consts);
+        compiler->consts = &compiler->local_consts;
 
-        char **args = NULL;
-        size_t arg_count = 0;
-        split_top_level_args(params, &args, &arg_count);
         sb_appendf(&compiler->functions_body, "static BppValue %s(", name);
         for (size_t i = 0; i < arg_count; i++) {
-            if (!is_identifier(args[i])) {
-                compile_error(compiler, line_no, line, "Invalid function parameter.", "def name(arg, arg):");
-            }
             if (i > 0) {
                 sb_append(&compiler->functions_body, ", ");
             }
@@ -873,6 +1319,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = NULL;
         if (!partition_keyword(body, " into ", &prompt, &name) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid ask syntax.", "ask prompt into name");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *prompt_c = transpile_expr(prompt);
             char *expr_c = format_text("bpp_input(%s)", prompt_c);
@@ -911,6 +1359,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = NULL;
         if (!partition_keyword(body, " into ", &filename, &name) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid read syntax.", "read filename into name");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *filename_c = transpile_expr(filename);
             char *expr_c = format_text("bpp_read_file(%s)", filename_c);
@@ -929,12 +1379,34 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         return;
     }
 
+    if (starts_with(line, "const ")) {
+        char *body = slice_trim(line, 6, strlen(line));
+        char *name = NULL;
+        char *expr = NULL;
+        if (!partition_assignment(body, &name, &expr) || !is_identifier(name)) {
+            compile_error(compiler, line_no, line, "Invalid const syntax.", "const name = value");
+        } else if (!check_name_allowed(compiler, line_no, line, name)) {
+        } else if (names_contains(compiler->names, name)) {
+            compile_error(compiler, line_no, line, "Name is already defined.", "choose a new const name");
+        } else {
+            char *expr_c = transpile_expr(expr);
+            declare_const(compiler, name, expr_c);
+            free(expr_c);
+        }
+        free(body);
+        free(name);
+        free(expr);
+        return;
+    }
+
     if (starts_with(line, "set ")) {
         char *body = slice_trim(line, 4, strlen(line));
         char *name = NULL;
         char *expr = NULL;
         if (!partition_keyword(body, " to ", &name, &expr) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid set syntax.", "set name to value");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *expr_c = transpile_expr(expr);
             declare_or_set(compiler, name, expr_c);
@@ -952,6 +1424,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = NULL;
         if (!partition_keyword(body, " to ", &expr, &name) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid add syntax.", "add value to name");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *expr_c = transpile_expr(expr);
             emit_line(compiler, "%s = bpp_add(%s, %s);", name, name, expr_c);
@@ -969,6 +1443,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = NULL;
         if (!partition_keyword(body, " from ", &expr, &name) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid subtract syntax.", "subtract value from name");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *expr_c = transpile_expr(expr);
             emit_line(compiler, "%s = bpp_sub(%s, %s);", name, name, expr_c);
@@ -986,6 +1462,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *expr = NULL;
         if (!partition_keyword(body, " by ", &name, &expr) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid multiply syntax.", "multiply name by value");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *expr_c = transpile_expr(expr);
             emit_line(compiler, "%s = bpp_mul(%s, %s);", name, name, expr_c);
@@ -1003,6 +1481,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *expr = NULL;
         if (!partition_keyword(body, " by ", &name, &expr) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid divide syntax.", "divide name by value");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *expr_c = transpile_expr(expr);
             emit_line(compiler, "%s = bpp_div(%s, %s);", name, name, expr_c);
@@ -1020,6 +1500,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = NULL;
         if (!partition_keyword(body, " in ", &expr, &name) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid put syntax.", "put value in list");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *expr_c = transpile_expr(expr);
             emit_line(compiler, "bpp_list_append(&%s, %s);", name, expr_c);
@@ -1037,6 +1519,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = NULL;
         if (!partition_keyword(body, " from ", &expr, &name) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid remove syntax.", "remove value from list");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             char *expr_c = transpile_expr(expr);
             emit_line(compiler, "bpp_list_remove(&%s, %s);", name, expr_c);
@@ -1052,6 +1536,8 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = slice_trim(line, 6, strlen(line));
         if (!is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid empty syntax.", "empty list");
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
         } else {
             emit_line(compiler, "bpp_list_empty(&%s);", name);
         }
@@ -1072,11 +1558,37 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         return;
     }
 
+    if (starts_with(line, "unless ") && ends_with(line, ":")) {
+        char *inner = without_trailing_colon(line);
+        char *cond = slice_trim(inner, 7, strlen(inner));
+        char *expr_c = transpile_expr(cond);
+        emit_line(compiler, "if (!bpp_truthy(%s)) {", expr_c);
+        compiler->indent++;
+        push_block(compiler, BLOCK_NORMAL);
+        free(inner);
+        free(cond);
+        free(expr_c);
+        return;
+    }
+
     if (starts_with(line, "while ") && ends_with(line, ":")) {
         char *inner = without_trailing_colon(line);
         char *cond = slice_trim(inner, 6, strlen(inner));
         char *expr_c = transpile_expr(cond);
         emit_line(compiler, "while (bpp_truthy(%s)) {", expr_c);
+        compiler->indent++;
+        push_block(compiler, BLOCK_NORMAL);
+        free(inner);
+        free(cond);
+        free(expr_c);
+        return;
+    }
+
+    if (starts_with(line, "until ") && ends_with(line, ":")) {
+        char *inner = without_trailing_colon(line);
+        char *cond = slice_trim(inner, 6, strlen(inner));
+        char *expr_c = transpile_expr(cond);
+        emit_line(compiler, "while (!bpp_truthy(%s)) {", expr_c);
         compiler->indent++;
         push_block(compiler, BLOCK_NORMAL);
         free(inner);
@@ -1099,12 +1611,17 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         char *name = NULL;
         int temp = ++compiler->temp_counter;
         if (partition_keyword(body, " times as ", &count, &name) && is_identifier(name)) {
-            char *count_c = transpile_expr(count);
-            emit_line(compiler, "for (long __bpp_i_%d = 1, __bpp_limit_%d = (long)bpp_to_number(%s); __bpp_i_%d <= __bpp_limit_%d; __bpp_i_%d++) {", temp, temp, count_c, temp, temp, temp);
-            compiler->indent++;
-            push_block(compiler, BLOCK_NORMAL);
-            emit_line(compiler, "BppValue %s = bpp_number((double)__bpp_i_%d);", name, temp);
-            free(count_c);
+            if (!check_name_allowed(compiler, line_no, line, name) ||
+                !check_name_writable(compiler, line_no, line, name)) {
+                skip_bad_block(compiler);
+            } else {
+                char *count_c = transpile_expr(count);
+                emit_line(compiler, "for (long __bpp_i_%d = 1, __bpp_limit_%d = (long)bpp_to_number(%s); __bpp_i_%d <= __bpp_limit_%d; __bpp_i_%d++) {", temp, temp, count_c, temp, temp, temp);
+                compiler->indent++;
+                push_block(compiler, BLOCK_NORMAL);
+                emit_line(compiler, "BppValue %s = bpp_number((double)__bpp_i_%d);", name, temp);
+                free(count_c);
+            }
         } else {
             free(count);
             free(name);
@@ -1112,6 +1629,7 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
             name = NULL;
             if (!partition_keyword(body, " times", &count, &name) || (name && name[0] != '\0')) {
                 compile_error(compiler, line_no, line, "Invalid repeat syntax.", "repeat count times:");
+                skip_bad_block(compiler);
             } else {
                 char *count_c = transpile_expr(count);
                 emit_line(compiler, "for (long __bpp_i_%d = 0, __bpp_limit_%d = (long)bpp_to_number(%s); __bpp_i_%d < __bpp_limit_%d; __bpp_i_%d++) {", temp, temp, count_c, temp, temp, temp);
@@ -1135,6 +1653,10 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         int temp = ++compiler->temp_counter;
         if (!partition_keyword(body, " in ", &name, &list_expr) || !is_identifier(name)) {
             compile_error(compiler, line_no, line, "Invalid for each syntax.", "for each name in list:");
+            skip_bad_block(compiler);
+        } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                   !check_name_writable(compiler, line_no, line, name)) {
+            skip_bad_block(compiler);
         } else {
             char *list_c = transpile_expr(list_expr);
             emit_line(compiler, "BppValue __bpp_list_%d = %s;", temp, list_c);
@@ -1151,25 +1673,169 @@ static void compile_statement(Compiler *compiler, int line_no, const char *line)
         return;
     }
 
-    if (strcmp(line, "stop loop") == 0) {
+    if (starts_with(line, "for ") && ends_with(line, ":")) {
+        char *inner = without_trailing_colon(line);
+        char *body = slice_trim(inner, 4, strlen(inner));
+        char *name = NULL;
+        char *right = NULL;
+        int temp = ++compiler->temp_counter;
+
+        if (partition_keyword(body, " in ", &name, &right)) {
+            if (!is_identifier(name)) {
+                compile_error(compiler, line_no, line, "Invalid for syntax.", "for name in list:");
+                skip_bad_block(compiler);
+            } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                       !check_name_writable(compiler, line_no, line, name)) {
+                skip_bad_block(compiler);
+            } else {
+                char *list_c = transpile_expr(right);
+                emit_line(compiler, "BppValue __bpp_list_%d = %s;", temp, list_c);
+                emit_line(compiler, "for (size_t __bpp_i_%d = 0; __bpp_i_%d < bpp_list_len(__bpp_list_%d); __bpp_i_%d++) {", temp, temp, temp, temp);
+                compiler->indent++;
+                push_block(compiler, BLOCK_NORMAL);
+                emit_line(compiler, "BppValue %s = bpp_list_get(__bpp_list_%d, __bpp_i_%d);", name, temp, temp);
+                free(list_c);
+            }
+            free(inner);
+            free(body);
+            free(name);
+            free(right);
+            return;
+        }
+
+        free(name);
+        free(right);
+        name = NULL;
+        right = NULL;
+        if (partition_keyword(body, " from ", &name, &right)) {
+            char *start = NULL;
+            char *after_direction = NULL;
+            char *end = NULL;
+            char *step = NULL;
+            int down = 0;
+            int range_error = 0;
+
+            if (!is_identifier(name)) {
+                compile_error(compiler, line_no, line, "Invalid range for syntax.", "for name from start to end:");
+                skip_bad_block(compiler);
+                range_error = 1;
+            } else if (!check_name_allowed(compiler, line_no, line, name) ||
+                       !check_name_writable(compiler, line_no, line, name)) {
+                skip_bad_block(compiler);
+                range_error = 1;
+            } else if (partition_keyword(right, " down to ", &start, &after_direction)) {
+                down = 1;
+            } else if (!partition_keyword(right, " to ", &start, &after_direction)) {
+                compile_error(compiler, line_no, line, "Invalid range for syntax.", "for name from start to end:");
+                skip_bad_block(compiler);
+                range_error = 1;
+            }
+
+            if (!range_error && after_direction) {
+                if (partition_keyword(after_direction, " step ", &end, &step)) {
+                } else {
+                    end = xstrdup(after_direction);
+                    step = xstrdup("1");
+                }
+
+                if (!end[0] || !step[0]) {
+                    compile_error(compiler, line_no, line, "Invalid range for syntax.", "for name from start to end step amount:");
+                    skip_bad_block(compiler);
+                } else {
+                    char *start_c = transpile_expr(start);
+                    char *end_c = transpile_expr(end);
+                    char *step_c = transpile_expr(step);
+                    emit_line(compiler, "for (double __bpp_i_%d = bpp_to_number(%s), __bpp_end_%d = bpp_to_number(%s), __bpp_step_%d = fabs(bpp_to_number(%s)); __bpp_i_%d %s __bpp_end_%d; __bpp_i_%d %s (__bpp_step_%d == 0 ? 1 : __bpp_step_%d)) {",
+                              temp, start_c, temp, end_c, temp, step_c,
+                              temp, down ? ">=" : "<=", temp,
+                              temp, down ? "-=" : "+=",
+                              temp, temp);
+                    compiler->indent++;
+                    push_block(compiler, BLOCK_NORMAL);
+                    emit_line(compiler, "BppValue %s = bpp_number(__bpp_i_%d);", name, temp);
+                    free(start_c);
+                    free(end_c);
+                    free(step_c);
+                }
+            }
+
+            free(inner);
+            free(body);
+            free(name);
+            free(right);
+            free(start);
+            free(after_direction);
+            free(end);
+            free(step);
+            return;
+        }
+
+        compile_error(compiler, line_no, line, "Invalid for syntax.", "for name in list: or for name from start to end:");
+        skip_bad_block(compiler);
+        free(inner);
+        free(body);
+        free(name);
+        free(right);
+        return;
+    }
+
+    if (strcmp(line, "stop loop") == 0 || strcmp(line, "break") == 0) {
         emit_line(compiler, "break;");
         return;
     }
 
-    if (strcmp(line, "next loop") == 0) {
+    if (strcmp(line, "next loop") == 0 || strcmp(line, "continue") == 0) {
         emit_line(compiler, "continue;");
         return;
+    }
+
+    {
+        char *name = NULL;
+        char *expr = NULL;
+        if (partition_assignment(line, &name, &expr)) {
+            if (!is_identifier(name)) {
+                compile_error(compiler, line_no, line, "Invalid assignment syntax.", "name = value");
+            } else if (check_name_allowed(compiler, line_no, line, name) &&
+                       check_name_writable(compiler, line_no, line, name)) {
+                char *expr_c = transpile_expr(expr);
+                declare_or_set(compiler, name, expr_c);
+                free(expr_c);
+            }
+            free(name);
+            free(expr);
+            return;
+        }
+        free(name);
+        free(expr);
     }
 
     compile_error(compiler, line_no, line, "Unsupported B++ syntax in native mode.", NULL);
 }
 
 static const char *runtime_c =
+"#include <errno.h>\n"
 "#include <math.h>\n"
 "#include <stdarg.h>\n"
 "#include <stdio.h>\n"
 "#include <stdlib.h>\n"
 "#include <string.h>\n"
+"#include <sys/stat.h>\n"
+"#ifdef _WIN32\n"
+"#define WIN32_LEAN_AND_MEAN\n"
+"#include <direct.h>\n"
+"#include <io.h>\n"
+"#include <process.h>\n"
+"#include <windows.h>\n"
+"#ifndef _S_IFDIR\n"
+"#define _S_IFDIR S_IFDIR\n"
+"#endif\n"
+"#else\n"
+"#include <dirent.h>\n"
+"#include <signal.h>\n"
+"#include <sys/types.h>\n"
+"#include <sys/wait.h>\n"
+"#include <unistd.h>\n"
+"#endif\n"
 "\n"
 "typedef enum { BPP_NIL, BPP_NUMBER, BPP_STRING, BPP_BOOL, BPP_LIST } BppType;\n"
 "typedef struct BppValue BppValue;\n"
@@ -1196,6 +1862,9 @@ static const char *runtime_c =
 "static BppValue bpp_sub(BppValue a, BppValue b) { return bpp_number(bpp_to_number(a) - bpp_to_number(b)); }\n"
 "static BppValue bpp_mul(BppValue a, BppValue b) { return bpp_number(bpp_to_number(a) * bpp_to_number(b)); }\n"
 "static BppValue bpp_div(BppValue a, BppValue b) { double d = bpp_to_number(b); return bpp_number(d == 0 ? 0 : bpp_to_number(a) / d); }\n"
+"static BppValue bpp_mod(BppValue a, BppValue b) { double d = bpp_to_number(b); return bpp_number(d == 0 ? 0 : fmod(bpp_to_number(a), d)); }\n"
+"static BppValue bpp_pow(BppValue a, BppValue b) { return bpp_number(pow(bpp_to_number(a), bpp_to_number(b))); }\n"
+"static BppValue bpp_not(BppValue v) { return bpp_bool(!bpp_truthy(v)); }\n"
 "static BppValue bpp_eq(BppValue a, BppValue b) { if (a.type == BPP_STRING || b.type == BPP_STRING) { char *sa = bpp_to_string(a); char *sb = bpp_to_string(b); int ok = strcmp(sa, sb) == 0; free(sa); free(sb); return bpp_bool(ok); } return bpp_bool(bpp_to_number(a) == bpp_to_number(b)); }\n"
 "static BppValue bpp_ne(BppValue a, BppValue b) { return bpp_bool(!bpp_truthy(bpp_eq(a, b))); }\n"
 "static BppValue bpp_gt(BppValue a, BppValue b) { return bpp_bool(bpp_to_number(a) > bpp_to_number(b)); }\n"
@@ -1209,11 +1878,853 @@ static const char *runtime_c =
 "static BppValue bpp_list_get(BppValue list, size_t index) { if (list.type != BPP_LIST || !list.list || index >= list.list->count) return bpp_nil(); return list.list->items[index]; }\n"
 "static void bpp_list_empty(BppValue *list) { if (list->type == BPP_LIST && list->list) list->list->count = 0; }\n"
 "static void bpp_list_remove(BppValue *list, BppValue item) { if (list->type != BPP_LIST || !list->list) return; for (size_t i = 0; i < list->list->count; i++) { if (bpp_truthy(bpp_eq(list->list->items[i], item))) { memmove(&list->list->items[i], &list->list->items[i + 1], (list->list->count - i - 1) * sizeof(BppValue)); list->list->count--; return; } } }\n"
+"static int bpp_os_last_exit_code_value = 0;\n"
+"static char bpp_os_last_error_text[1024] = \"\";\n"
+"static void bpp_os_clear_error(void) { bpp_os_last_error_text[0] = '\\0'; }\n"
+"static void bpp_os_set_error(const char *text) { snprintf(bpp_os_last_error_text, sizeof(bpp_os_last_error_text), \"%s\", text ? text : \"\"); }\n"
+"static void bpp_os_set_errno_error(const char *action) { char buf[1024]; snprintf(buf, sizeof(buf), \"%s: %s\", action, strerror(errno)); bpp_os_set_error(buf); }\n"
+"static BppValue bpp_os_last_error(void) { return bpp_string(bpp_os_last_error_text); }\n"
+"static BppValue bpp_os_exit_code(void) { return bpp_number((double)bpp_os_last_exit_code_value); }\n"
+"#ifdef _WIN32\n"
+"static int bpp_os_is_dir_mode(unsigned int mode) { return (mode & _S_IFDIR) != 0; }\n"
+"#define bpp_popen _popen\n"
+"#define bpp_pclose _pclose\n"
+"#else\n"
+"static int bpp_os_is_dir_mode(mode_t mode) { return S_ISDIR(mode); }\n"
+"#define bpp_popen popen\n"
+"#define bpp_pclose pclose\n"
+"#endif\n"
+"static char *bpp_os_join_path(const char *left, const char *right) {\n"
+"#ifdef _WIN32\n"
+"    char sep = '\\\\';\n"
+"#else\n"
+"    char sep = '/';\n"
+"#endif\n"
+"    size_t left_len = strlen(left);\n"
+"    size_t right_len = strlen(right);\n"
+"    int needs_sep = left_len > 0 && left[left_len - 1] != '/' && left[left_len - 1] != '\\\\';\n"
+"    char *out = (char *)malloc(left_len + right_len + (needs_sep ? 2 : 1));\n"
+"    if (!out) exit(2);\n"
+"    memcpy(out, left, left_len);\n"
+"    size_t pos = left_len;\n"
+"    if (needs_sep) out[pos++] = sep;\n"
+"    memcpy(out + pos, right, right_len + 1);\n"
+"    return out;\n"
+"}\n"
+"static BppValue bpp_os_current_folder(void) {\n"
+"    char buf[4096];\n"
+"#ifdef _WIN32\n"
+"    char *got = _getcwd(buf, sizeof(buf));\n"
+"#else\n"
+"    char *got = getcwd(buf, sizeof(buf));\n"
+"#endif\n"
+"    if (!got) { bpp_os_set_errno_error(\"current folder\"); return bpp_string(\"\"); }\n"
+"    bpp_os_clear_error();\n"
+"    return bpp_string(buf);\n"
+"}\n"
+"static BppValue bpp_os_home_folder(void) {\n"
+"    const char *home = getenv(\"HOME\");\n"
+"#ifdef _WIN32\n"
+"    if (!home || !home[0]) home = getenv(\"USERPROFILE\");\n"
+"#endif\n"
+"    if (!home) home = \"\";\n"
+"    bpp_os_clear_error();\n"
+"    return bpp_string(home);\n"
+"}\n"
+"static BppValue bpp_os_temp_folder(void) {\n"
+"    const char *tmp = getenv(\"TMPDIR\");\n"
+"#ifdef _WIN32\n"
+"    if (!tmp || !tmp[0]) tmp = getenv(\"TEMP\");\n"
+"    if (!tmp || !tmp[0]) tmp = getenv(\"TMP\");\n"
+"#endif\n"
+"    if (!tmp || !tmp[0]) tmp = \"/tmp\";\n"
+"    bpp_os_clear_error();\n"
+"    return bpp_string(tmp);\n"
+"}\n"
+"static BppValue bpp_os_file_exists(BppValue path_value) { char *path = bpp_to_string(path_value); struct stat st; int ok = stat(path, &st) == 0 && !bpp_os_is_dir_mode(st.st_mode); free(path); bpp_os_clear_error(); return bpp_bool(ok); }\n"
+"static BppValue bpp_os_folder_exists(BppValue path_value) { char *path = bpp_to_string(path_value); struct stat st; int ok = stat(path, &st) == 0 && bpp_os_is_dir_mode(st.st_mode); free(path); bpp_os_clear_error(); return bpp_bool(ok); }\n"
+"static BppValue bpp_os_list_folder(BppValue path_value) { char *path = bpp_to_string(path_value); BppValue list = bpp_list();\n"
+"#ifdef _WIN32\n"
+"char *pattern = bpp_os_join_path(path, \"*\"); WIN32_FIND_DATAA data; HANDLE h = FindFirstFileA(pattern, &data); free(pattern); if (h == INVALID_HANDLE_VALUE) { bpp_os_set_error(\"could not list folder\"); free(path); return list; } do { if (strcmp(data.cFileName, \".\") != 0 && strcmp(data.cFileName, \"..\") != 0) bpp_list_append(&list, bpp_string(data.cFileName)); } while (FindNextFileA(h, &data)); FindClose(h);\n"
+"#else\n"
+"DIR *dir = opendir(path); if (!dir) { bpp_os_set_errno_error(\"list folder\"); free(path); return list; } struct dirent *entry; while ((entry = readdir(dir)) != NULL) { if (strcmp(entry->d_name, \".\") != 0 && strcmp(entry->d_name, \"..\") != 0) bpp_list_append(&list, bpp_string(entry->d_name)); } closedir(dir);\n"
+"#endif\n"
+"free(path); bpp_os_clear_error(); return list; }\n"
+"static void bpp_os_create_folder(BppValue path_value) {\n"
+"    char *path = bpp_to_string(path_value);\n"
+"    int ok;\n"
+"#ifdef _WIN32\n"
+"    ok = CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;\n"
+"#else\n"
+"    ok = mkdir(path, 0777) == 0 || errno == EEXIST;\n"
+"#endif\n"
+"    if (ok) bpp_os_clear_error(); else bpp_os_set_error(\"could not create folder\");\n"
+"    free(path);\n"
+"}\n"
+"static void bpp_os_copy_file(BppValue from_value, BppValue to_value) { char *from = bpp_to_string(from_value); char *to = bpp_to_string(to_value); FILE *src = fopen(from, \"rb\"); if (!src) { bpp_os_set_errno_error(\"copy file\"); free(from); free(to); return; } FILE *dst = fopen(to, \"wb\"); if (!dst) { bpp_os_set_errno_error(\"copy file\"); fclose(src); free(from); free(to); return; } char buf[8192]; size_t n; int ok = 1; while ((n = fread(buf, 1, sizeof(buf), src)) > 0) { if (fwrite(buf, 1, n, dst) != n) { ok = 0; break; } } if (ferror(src)) ok = 0; fclose(src); fclose(dst); if (ok) bpp_os_clear_error(); else bpp_os_set_error(\"could not copy file\"); free(from); free(to); }\n"
+"static void bpp_os_move_file(BppValue from_value, BppValue to_value) { char *from = bpp_to_string(from_value); char *to = bpp_to_string(to_value); if (rename(from, to) == 0) bpp_os_clear_error(); else bpp_os_set_errno_error(\"move file\"); free(from); free(to); }\n"
+"static void bpp_os_delete_file(BppValue path_value) { char *path = bpp_to_string(path_value); if (remove(path) == 0) bpp_os_clear_error(); else bpp_os_set_errno_error(\"delete file\"); free(path); }\n"
+"static int bpp_os_delete_folder_path(const char *path) {\n"
+"#ifdef _WIN32\n"
+"char *pattern = bpp_os_join_path(path, \"*\"); WIN32_FIND_DATAA data; HANDLE h = FindFirstFileA(pattern, &data); free(pattern); if (h != INVALID_HANDLE_VALUE) { do { if (strcmp(data.cFileName, \".\") == 0 || strcmp(data.cFileName, \"..\") == 0) continue; char *full = bpp_os_join_path(path, data.cFileName); if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { if (!bpp_os_delete_folder_path(full)) { free(full); FindClose(h); return 0; } } else if (!DeleteFileA(full)) { free(full); FindClose(h); return 0; } free(full); } while (FindNextFileA(h, &data)); FindClose(h); } return RemoveDirectoryA(path) != 0;\n"
+"#else\n"
+"DIR *dir = opendir(path); if (dir) { struct dirent *entry; while ((entry = readdir(dir)) != NULL) { if (strcmp(entry->d_name, \".\") == 0 || strcmp(entry->d_name, \"..\") == 0) continue; char *full = bpp_os_join_path(path, entry->d_name); struct stat st; if (stat(full, &st) == 0 && bpp_os_is_dir_mode(st.st_mode)) { if (!bpp_os_delete_folder_path(full)) { free(full); closedir(dir); return 0; } } else if (remove(full) != 0) { free(full); closedir(dir); return 0; } free(full); } closedir(dir); } return rmdir(path) == 0;\n"
+"#endif\n"
+"}\n"
+"static void bpp_os_delete_folder_recursive(BppValue path_value) { char *path = bpp_to_string(path_value); if (bpp_os_delete_folder_path(path)) bpp_os_clear_error(); else bpp_os_set_error(\"could not delete folder\"); free(path); }\n"
+"static BppValue bpp_os_env(BppValue name_value) {\n"
+"    char *name = bpp_to_string(name_value);\n"
+"#ifdef _WIN32\n"
+"    DWORD needed = GetEnvironmentVariableA(name, NULL, 0);\n"
+"    if (needed == 0) { free(name); bpp_os_clear_error(); return bpp_string(\"\"); }\n"
+"    char *value = (char *)malloc((size_t)needed);\n"
+"    if (!value) exit(2);\n"
+"    GetEnvironmentVariableA(name, value, needed);\n"
+"    BppValue out = bpp_string(value);\n"
+"    free(value);\n"
+"#else\n"
+"    const char *found = getenv(name);\n"
+"    BppValue out = bpp_string(found ? found : \"\");\n"
+"#endif\n"
+"    free(name);\n"
+"    bpp_os_clear_error();\n"
+"    return out;\n"
+"}\n"
+"static void bpp_os_set_env(BppValue name_value, BppValue value_value) {\n"
+"    char *name = bpp_to_string(name_value);\n"
+"    char *value = bpp_to_string(value_value);\n"
+"    int ok;\n"
+"#ifdef _WIN32\n"
+"    ok = SetEnvironmentVariableA(name, value) != 0;\n"
+"#else\n"
+"    ok = setenv(name, value, 1) == 0;\n"
+"#endif\n"
+"    if (ok) bpp_os_clear_error(); else bpp_os_set_errno_error(\"set env\");\n"
+"    free(name);\n"
+"    free(value);\n"
+"}\n"
+"static void bpp_os_remove_env(BppValue name_value) {\n"
+"    char *name = bpp_to_string(name_value);\n"
+"    int ok;\n"
+"#ifdef _WIN32\n"
+"    ok = SetEnvironmentVariableA(name, NULL) != 0;\n"
+"#else\n"
+"    ok = unsetenv(name) == 0;\n"
+"#endif\n"
+"    if (ok) bpp_os_clear_error(); else bpp_os_set_errno_error(\"remove env\");\n"
+"    free(name);\n"
+"}\n"
+"static int bpp_os_decode_exit_code(int status) {\n"
+"#ifdef _WIN32\n"
+"    return status;\n"
+"#else\n"
+"    if (WIFEXITED(status)) return WEXITSTATUS(status);\n"
+"    return status;\n"
+"#endif\n"
+"}\n"
+"static BppValue bpp_os_run(BppValue command_value) { char *command = bpp_to_string(command_value); FILE *pipe = bpp_popen(command, \"r\"); free(command); if (!pipe) { bpp_os_last_exit_code_value = -1; bpp_os_set_error(\"could not run command\"); return bpp_string(\"\"); } size_t cap = 4096, len = 0; char *out = (char *)malloc(cap); if (!out) exit(2); out[0] = '\\0'; char buf[512]; while (fgets(buf, sizeof(buf), pipe)) { size_t n = strlen(buf); if (len + n + 1 > cap) { while (len + n + 1 > cap) cap *= 2; out = (char *)realloc(out, cap); if (!out) exit(2); } memcpy(out + len, buf, n + 1); len += n; } int status = bpp_pclose(pipe); bpp_os_last_exit_code_value = bpp_os_decode_exit_code(status); bpp_os_clear_error(); BppValue value = bpp_string(out); free(out); return value; }\n"
+"static BppValue bpp_os_process_id(void) {\n"
+"#ifdef _WIN32\n"
+"    return bpp_number((double)_getpid());\n"
+"#else\n"
+"    return bpp_number((double)getpid());\n"
+"#endif\n"
+"}\n"
+"static void bpp_os_kill_process(BppValue pid_value) {\n"
+"    long pid = (long)bpp_to_number(pid_value);\n"
+"#ifdef _WIN32\n"
+"    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);\n"
+"    if (!h) { bpp_os_set_error(\"could not open process\"); return; }\n"
+"    if (TerminateProcess(h, 1)) bpp_os_clear_error(); else bpp_os_set_error(\"could not kill process\");\n"
+"    CloseHandle(h);\n"
+"#else\n"
+"    if (kill((pid_t)pid, SIGTERM) == 0) bpp_os_clear_error(); else bpp_os_set_errno_error(\"kill process\");\n"
+"#endif\n"
+"}\n"
+"static void bpp_os_sleep_ms(BppValue amount_value) {\n"
+"    double amount = bpp_to_number(amount_value);\n"
+"    if (amount < 0) amount = 0;\n"
+"#ifdef _WIN32\n"
+"    Sleep((DWORD)amount);\n"
+"#else\n"
+"    usleep((unsigned int)(amount * 1000.0));\n"
+"#endif\n"
+"    bpp_os_clear_error();\n"
+"}\n"
 "\n";
 
-static int compile_source_to_c(const char *source_path, const char *src, StringBuilder *out) {
-    Compiler compiler;
-    compiler_init(&compiler, source_path);
+typedef enum {
+    FAST_T_EOF,
+    FAST_T_NUMBER,
+    FAST_T_IDENTIFIER,
+    FAST_T_PLUS,
+    FAST_T_MINUS,
+    FAST_T_STAR,
+    FAST_T_SLASH,
+    FAST_T_LPAREN,
+    FAST_T_RPAREN,
+    FAST_T_EQ,
+    FAST_T_NE,
+    FAST_T_GT,
+    FAST_T_LT,
+    FAST_T_GE,
+    FAST_T_LE,
+    FAST_T_AND,
+    FAST_T_OR
+} FastTokenKind;
+
+typedef struct {
+    FastTokenKind kind;
+    char *text;
+} FastToken;
+
+typedef struct {
+    FastToken *items;
+    size_t count;
+    size_t cap;
+    size_t pos;
+} FastTokenList;
+
+typedef enum {
+    FAST_EXPR_NUMBER,
+    FAST_EXPR_NAME,
+    FAST_EXPR_BINARY
+} FastExprKind;
+
+typedef struct FastExpr FastExpr;
+struct FastExpr {
+    FastExprKind kind;
+    char *text;
+    char op[4];
+    FastExpr *left;
+    FastExpr *right;
+};
+
+typedef enum {
+    FAST_STMT_SET,
+    FAST_STMT_ADD,
+    FAST_STMT_SUBTRACT,
+    FAST_STMT_MULTIPLY,
+    FAST_STMT_DIVIDE,
+    FAST_STMT_SAY,
+    FAST_STMT_IF,
+    FAST_STMT_WHILE,
+    FAST_STMT_FOREVER,
+    FAST_STMT_REPEAT,
+    FAST_STMT_REPEAT_AS,
+    FAST_STMT_STOP,
+    FAST_STMT_NEXT
+} FastStmtKind;
+
+typedef struct FastStmt FastStmt;
+
+typedef struct {
+    FastStmt **items;
+    size_t count;
+    size_t cap;
+} FastStmtList;
+
+struct FastStmt {
+    FastStmtKind kind;
+    int line_no;
+    char *line;
+    char *name;
+    int without_newline;
+    FastExpr *expr;
+    FastStmtList body;
+};
+
+typedef struct {
+    int line_no;
+    char *text;
+} FastLine;
+
+typedef struct {
+    FastLine *items;
+    size_t count;
+    size_t cap;
+    size_t pos;
+    int unsupported;
+} FastParser;
+
+static void fast_tokens_init(FastTokenList *tokens) {
+    tokens->items = NULL;
+    tokens->count = 0;
+    tokens->cap = 0;
+    tokens->pos = 0;
+}
+
+static void fast_tokens_free(FastTokenList *tokens) {
+    for (size_t i = 0; i < tokens->count; i++) {
+        free(tokens->items[i].text);
+    }
+    free(tokens->items);
+    tokens->items = NULL;
+    tokens->count = 0;
+    tokens->cap = 0;
+    tokens->pos = 0;
+}
+
+static void fast_tokens_add(FastTokenList *tokens, FastTokenKind kind, const char *start, size_t len) {
+    if (tokens->count == tokens->cap) {
+        tokens->cap = tokens->cap ? tokens->cap * 2 : 32;
+        tokens->items = (FastToken *)xrealloc(tokens->items, tokens->cap * sizeof(FastToken));
+    }
+    tokens->items[tokens->count].kind = kind;
+    tokens->items[tokens->count].text = slice_trim(start, 0, len);
+    tokens->count++;
+}
+
+static int fast_tokenize_expr(const char *text, FastTokenList *tokens) {
+    fast_tokens_init(tokens);
+    for (size_t i = 0; text[i];) {
+        if (isspace((unsigned char)text[i])) {
+            i++;
+            continue;
+        }
+
+        if (isdigit((unsigned char)text[i]) || (text[i] == '.' && isdigit((unsigned char)text[i + 1]))) {
+            size_t start = i;
+            int seen_dot = 0;
+            while (isdigit((unsigned char)text[i]) || text[i] == '.') {
+                if (text[i] == '.') {
+                    if (seen_dot) {
+                        fast_tokens_free(tokens);
+                        return 0;
+                    }
+                    seen_dot = 1;
+                }
+                i++;
+            }
+            fast_tokens_add(tokens, FAST_T_NUMBER, text + start, i - start);
+            continue;
+        }
+
+        if (isalpha((unsigned char)text[i]) || text[i] == '_') {
+            size_t start = i;
+            while (isalnum((unsigned char)text[i]) || text[i] == '_') {
+                i++;
+            }
+            char *word = slice_trim(text, start, i);
+            if (strcmp(word, "and") == 0) {
+                fast_tokens_add(tokens, FAST_T_AND, text + start, i - start);
+            } else if (strcmp(word, "or") == 0) {
+                fast_tokens_add(tokens, FAST_T_OR, text + start, i - start);
+            } else {
+                fast_tokens_add(tokens, FAST_T_IDENTIFIER, text + start, i - start);
+            }
+            free(word);
+            continue;
+        }
+
+        if (text[i] == '=' && text[i + 1] == '=') {
+            fast_tokens_add(tokens, FAST_T_EQ, text + i, 2);
+            i += 2;
+            continue;
+        }
+        if (text[i] == '!' && text[i + 1] == '=') {
+            fast_tokens_add(tokens, FAST_T_NE, text + i, 2);
+            i += 2;
+            continue;
+        }
+        if (text[i] == '>' && text[i + 1] == '=') {
+            fast_tokens_add(tokens, FAST_T_GE, text + i, 2);
+            i += 2;
+            continue;
+        }
+        if (text[i] == '<' && text[i + 1] == '=') {
+            fast_tokens_add(tokens, FAST_T_LE, text + i, 2);
+            i += 2;
+            continue;
+        }
+
+        switch (text[i]) {
+            case '+': fast_tokens_add(tokens, FAST_T_PLUS, text + i, 1); break;
+            case '-': fast_tokens_add(tokens, FAST_T_MINUS, text + i, 1); break;
+            case '*': fast_tokens_add(tokens, FAST_T_STAR, text + i, 1); break;
+            case '/': fast_tokens_add(tokens, FAST_T_SLASH, text + i, 1); break;
+            case '(': fast_tokens_add(tokens, FAST_T_LPAREN, text + i, 1); break;
+            case ')': fast_tokens_add(tokens, FAST_T_RPAREN, text + i, 1); break;
+            case '>': fast_tokens_add(tokens, FAST_T_GT, text + i, 1); break;
+            case '<': fast_tokens_add(tokens, FAST_T_LT, text + i, 1); break;
+            default:
+                fast_tokens_free(tokens);
+                return 0;
+        }
+        i++;
+    }
+    fast_tokens_add(tokens, FAST_T_EOF, text + strlen(text), 0);
+    return 1;
+}
+
+static FastToken *fast_peek(FastTokenList *tokens) {
+    return &tokens->items[tokens->pos];
+}
+
+static int fast_match(FastTokenList *tokens, FastTokenKind kind) {
+    if (fast_peek(tokens)->kind == kind) {
+        tokens->pos++;
+        return 1;
+    }
+    return 0;
+}
+
+static FastExpr *fast_expr_new(FastExprKind kind) {
+    FastExpr *expr = (FastExpr *)xmalloc(sizeof(FastExpr));
+    expr->kind = kind;
+    expr->text = NULL;
+    expr->op[0] = '\0';
+    expr->left = NULL;
+    expr->right = NULL;
+    return expr;
+}
+
+static FastExpr *fast_expr_binary(const char *op, FastExpr *left, FastExpr *right) {
+    FastExpr *expr = fast_expr_new(FAST_EXPR_BINARY);
+    snprintf(expr->op, sizeof(expr->op), "%s", op);
+    expr->left = left;
+    expr->right = right;
+    return expr;
+}
+
+static void fast_expr_free(FastExpr *expr) {
+    if (!expr) {
+        return;
+    }
+    free(expr->text);
+    fast_expr_free(expr->left);
+    fast_expr_free(expr->right);
+    free(expr);
+}
+
+static FastExpr *fast_parse_or(FastTokenList *tokens, int *ok);
+
+static FastExpr *fast_parse_primary(FastTokenList *tokens, int *ok) {
+    FastToken *token = fast_peek(tokens);
+    if (fast_match(tokens, FAST_T_NUMBER)) {
+        FastExpr *expr = fast_expr_new(FAST_EXPR_NUMBER);
+        expr->text = xstrdup(token->text);
+        return expr;
+    }
+    if (fast_match(tokens, FAST_T_IDENTIFIER)) {
+        FastExpr *expr = fast_expr_new(FAST_EXPR_NAME);
+        if (strcmp(token->text, "true") == 0) {
+            expr->kind = FAST_EXPR_NUMBER;
+            expr->text = xstrdup("1");
+        } else if (strcmp(token->text, "false") == 0) {
+            expr->kind = FAST_EXPR_NUMBER;
+            expr->text = xstrdup("0");
+        } else {
+            expr->text = xstrdup(token->text);
+        }
+        return expr;
+    }
+    if (fast_match(tokens, FAST_T_LPAREN)) {
+        FastExpr *expr = fast_parse_or(tokens, ok);
+        if (!fast_match(tokens, FAST_T_RPAREN)) {
+            *ok = 0;
+        }
+        return expr;
+    }
+    *ok = 0;
+    return NULL;
+}
+
+static FastExpr *fast_parse_unary(FastTokenList *tokens, int *ok) {
+    if (fast_match(tokens, FAST_T_MINUS)) {
+        FastExpr *zero = fast_expr_new(FAST_EXPR_NUMBER);
+        zero->text = xstrdup("0");
+        return fast_expr_binary("-", zero, fast_parse_unary(tokens, ok));
+    }
+    return fast_parse_primary(tokens, ok);
+}
+
+static FastExpr *fast_parse_factor(FastTokenList *tokens, int *ok) {
+    FastExpr *expr = fast_parse_unary(tokens, ok);
+    while (*ok && (fast_peek(tokens)->kind == FAST_T_STAR || fast_peek(tokens)->kind == FAST_T_SLASH)) {
+        FastTokenKind kind = fast_peek(tokens)->kind;
+        tokens->pos++;
+        FastExpr *right = fast_parse_unary(tokens, ok);
+        expr = fast_expr_binary(kind == FAST_T_STAR ? "*" : "/", expr, right);
+    }
+    return expr;
+}
+
+static FastExpr *fast_parse_term(FastTokenList *tokens, int *ok) {
+    FastExpr *expr = fast_parse_factor(tokens, ok);
+    while (*ok && (fast_peek(tokens)->kind == FAST_T_PLUS || fast_peek(tokens)->kind == FAST_T_MINUS)) {
+        FastTokenKind kind = fast_peek(tokens)->kind;
+        tokens->pos++;
+        FastExpr *right = fast_parse_factor(tokens, ok);
+        expr = fast_expr_binary(kind == FAST_T_PLUS ? "+" : "-", expr, right);
+    }
+    return expr;
+}
+
+static FastExpr *fast_parse_compare(FastTokenList *tokens, int *ok) {
+    FastExpr *expr = fast_parse_term(tokens, ok);
+    while (*ok) {
+        FastTokenKind kind = fast_peek(tokens)->kind;
+        const char *op = NULL;
+        if (kind == FAST_T_EQ) op = "==";
+        else if (kind == FAST_T_NE) op = "!=";
+        else if (kind == FAST_T_GT) op = ">";
+        else if (kind == FAST_T_LT) op = "<";
+        else if (kind == FAST_T_GE) op = ">=";
+        else if (kind == FAST_T_LE) op = "<=";
+        else break;
+        tokens->pos++;
+        FastExpr *right = fast_parse_term(tokens, ok);
+        expr = fast_expr_binary(op, expr, right);
+    }
+    return expr;
+}
+
+static FastExpr *fast_parse_and(FastTokenList *tokens, int *ok) {
+    FastExpr *expr = fast_parse_compare(tokens, ok);
+    while (*ok && fast_match(tokens, FAST_T_AND)) {
+        FastExpr *right = fast_parse_compare(tokens, ok);
+        expr = fast_expr_binary("and", expr, right);
+    }
+    return expr;
+}
+
+static FastExpr *fast_parse_or(FastTokenList *tokens, int *ok) {
+    FastExpr *expr = fast_parse_and(tokens, ok);
+    while (*ok && fast_match(tokens, FAST_T_OR)) {
+        FastExpr *right = fast_parse_and(tokens, ok);
+        expr = fast_expr_binary("or", expr, right);
+    }
+    return expr;
+}
+
+static FastExpr *fast_parse_expr_text(const char *text) {
+    FastTokenList tokens;
+    if (!fast_tokenize_expr(text, &tokens)) {
+        return NULL;
+    }
+    int ok = 1;
+    FastExpr *expr = fast_parse_or(&tokens, &ok);
+    if (!ok || fast_peek(&tokens)->kind != FAST_T_EOF) {
+        fast_expr_free(expr);
+        fast_tokens_free(&tokens);
+        return NULL;
+    }
+    fast_tokens_free(&tokens);
+    return expr;
+}
+
+static void fast_stmt_list_init(FastStmtList *list) {
+    list->items = NULL;
+    list->count = 0;
+    list->cap = 0;
+}
+
+static void fast_stmt_free(FastStmt *stmt);
+
+static void fast_stmt_list_free(FastStmtList *list) {
+    for (size_t i = 0; i < list->count; i++) {
+        fast_stmt_free(list->items[i]);
+    }
+    free(list->items);
+    list->items = NULL;
+    list->count = 0;
+    list->cap = 0;
+}
+
+static void fast_stmt_list_add(FastStmtList *list, FastStmt *stmt) {
+    if (list->count == list->cap) {
+        list->cap = list->cap ? list->cap * 2 : 32;
+        list->items = (FastStmt **)xrealloc(list->items, list->cap * sizeof(FastStmt *));
+    }
+    list->items[list->count++] = stmt;
+}
+
+static FastStmt *fast_stmt_new(FastStmtKind kind, int line_no, const char *line) {
+    FastStmt *stmt = (FastStmt *)xmalloc(sizeof(FastStmt));
+    stmt->kind = kind;
+    stmt->line_no = line_no;
+    stmt->line = xstrdup(line);
+    stmt->name = NULL;
+    stmt->without_newline = 0;
+    stmt->expr = NULL;
+    fast_stmt_list_init(&stmt->body);
+    return stmt;
+}
+
+static void fast_stmt_free(FastStmt *stmt) {
+    if (!stmt) {
+        return;
+    }
+    free(stmt->line);
+    free(stmt->name);
+    fast_expr_free(stmt->expr);
+    fast_stmt_list_free(&stmt->body);
+    free(stmt);
+}
+
+static void fast_parser_add_line(FastParser *parser, int line_no, const char *text) {
+    if (parser->count == parser->cap) {
+        parser->cap = parser->cap ? parser->cap * 2 : 64;
+        parser->items = (FastLine *)xrealloc(parser->items, parser->cap * sizeof(FastLine));
+    }
+    parser->items[parser->count].line_no = line_no;
+    parser->items[parser->count].text = xstrdup(text);
+    parser->count++;
+}
+
+static void fast_parser_free(FastParser *parser) {
+    for (size_t i = 0; i < parser->count; i++) {
+        free(parser->items[i].text);
+    }
+    free(parser->items);
+    parser->items = NULL;
+    parser->count = 0;
+    parser->cap = 0;
+    parser->pos = 0;
+}
+
+static int fast_parse_block(FastParser *parser, FastStmtList *out, int needs_end);
+
+static int fast_parse_expr_or_unsupported(const char *text, FastExpr **out) {
+    FastExpr *expr = fast_parse_expr_text(text);
+    if (!expr) {
+        return 0;
+    }
+    *out = expr;
+    return 1;
+}
+
+static int fast_parse_name_target(const char *name) {
+    return is_identifier(name) && !is_reserved_identifier(name);
+}
+
+static int fast_parse_statement(FastParser *parser, FastStmtList *out) {
+    FastLine *line = &parser->items[parser->pos];
+    const char *text = line->text;
+
+    if (strcmp(text, "stop loop") == 0) {
+        fast_stmt_list_add(out, fast_stmt_new(FAST_STMT_STOP, line->line_no, text));
+        parser->pos++;
+        return 1;
+    }
+    if (strcmp(text, "next loop") == 0) {
+        fast_stmt_list_add(out, fast_stmt_new(FAST_STMT_NEXT, line->line_no, text));
+        parser->pos++;
+        return 1;
+    }
+
+    if (starts_with(text, "say ")) {
+        char *body = slice_trim(text, 4, strlen(text));
+        char *expr_text = NULL;
+        char *mode = NULL;
+        FastStmt *stmt = fast_stmt_new(FAST_STMT_SAY, line->line_no, text);
+        if (partition_keyword(body, " without newline", &expr_text, &mode) && mode[0] == '\0') {
+            stmt->without_newline = 1;
+        } else {
+            free(expr_text);
+            expr_text = xstrdup(body);
+        }
+        int ok = fast_parse_expr_or_unsupported(expr_text, &stmt->expr);
+        free(body);
+        free(expr_text);
+        free(mode);
+        if (!ok) {
+            fast_stmt_free(stmt);
+            return 0;
+        }
+        fast_stmt_list_add(out, stmt);
+        parser->pos++;
+        return 1;
+    }
+
+    if (starts_with(text, "set ")) {
+        char *body = slice_trim(text, 4, strlen(text));
+        char *name = NULL;
+        char *expr_text = NULL;
+        if (!partition_keyword(body, " to ", &name, &expr_text) || !fast_parse_name_target(name)) {
+            free(body);
+            free(name);
+            free(expr_text);
+            return 0;
+        }
+        FastStmt *stmt = fast_stmt_new(FAST_STMT_SET, line->line_no, text);
+        stmt->name = xstrdup(name);
+        int ok = fast_parse_expr_or_unsupported(expr_text, &stmt->expr);
+        free(body);
+        free(name);
+        free(expr_text);
+        if (!ok) {
+            fast_stmt_free(stmt);
+            return 0;
+        }
+        fast_stmt_list_add(out, stmt);
+        parser->pos++;
+        return 1;
+    }
+
+    const struct {
+        const char *prefix;
+        const char *keyword;
+        FastStmtKind kind;
+    } math_forms[] = {
+        {"add ", " to ", FAST_STMT_ADD},
+        {"subtract ", " from ", FAST_STMT_SUBTRACT},
+        {"multiply ", " by ", FAST_STMT_MULTIPLY},
+        {"divide ", " by ", FAST_STMT_DIVIDE}
+    };
+    for (size_t i = 0; i < sizeof(math_forms) / sizeof(math_forms[0]); i++) {
+        if (starts_with(text, math_forms[i].prefix)) {
+            size_t prefix_len = strlen(math_forms[i].prefix);
+            char *body = slice_trim(text, prefix_len, strlen(text));
+            char *left = NULL;
+            char *right = NULL;
+            int partitioned = partition_keyword(body, math_forms[i].keyword, &left, &right);
+            char *name = (math_forms[i].kind == FAST_STMT_MULTIPLY || math_forms[i].kind == FAST_STMT_DIVIDE) ? left : right;
+            char *expr_text = (math_forms[i].kind == FAST_STMT_MULTIPLY || math_forms[i].kind == FAST_STMT_DIVIDE) ? right : left;
+            if (!partitioned || !fast_parse_name_target(name)) {
+                free(body);
+                free(left);
+                free(right);
+                return 0;
+            }
+            FastStmt *stmt = fast_stmt_new(math_forms[i].kind, line->line_no, text);
+            stmt->name = xstrdup(name);
+            int ok = fast_parse_expr_or_unsupported(expr_text, &stmt->expr);
+            free(body);
+            free(left);
+            free(right);
+            if (!ok) {
+                fast_stmt_free(stmt);
+                return 0;
+            }
+            fast_stmt_list_add(out, stmt);
+            parser->pos++;
+            return 1;
+        }
+    }
+
+    if (starts_with(text, "if ") && ends_with(text, ":")) {
+        char *inner = without_trailing_colon(text);
+        char *cond = slice_trim(inner, 3, strlen(inner));
+        FastStmt *stmt = fast_stmt_new(FAST_STMT_IF, line->line_no, text);
+        int ok = fast_parse_expr_or_unsupported(cond, &stmt->expr);
+        free(inner);
+        free(cond);
+        if (!ok) {
+            fast_stmt_free(stmt);
+            return 0;
+        }
+        parser->pos++;
+        if (!fast_parse_block(parser, &stmt->body, 1)) {
+            fast_stmt_free(stmt);
+            return 0;
+        }
+        fast_stmt_list_add(out, stmt);
+        return 1;
+    }
+
+    if (starts_with(text, "while ") && ends_with(text, ":")) {
+        char *inner = without_trailing_colon(text);
+        char *cond = slice_trim(inner, 6, strlen(inner));
+        FastStmt *stmt = fast_stmt_new(FAST_STMT_WHILE, line->line_no, text);
+        int ok = fast_parse_expr_or_unsupported(cond, &stmt->expr);
+        free(inner);
+        free(cond);
+        if (!ok) {
+            fast_stmt_free(stmt);
+            return 0;
+        }
+        parser->pos++;
+        if (!fast_parse_block(parser, &stmt->body, 1)) {
+            fast_stmt_free(stmt);
+            return 0;
+        }
+        fast_stmt_list_add(out, stmt);
+        return 1;
+    }
+
+    if (strcmp(text, "forever:") == 0) {
+        FastStmt *stmt = fast_stmt_new(FAST_STMT_FOREVER, line->line_no, text);
+        parser->pos++;
+        if (!fast_parse_block(parser, &stmt->body, 1)) {
+            fast_stmt_free(stmt);
+            return 0;
+        }
+        fast_stmt_list_add(out, stmt);
+        return 1;
+    }
+
+    if (starts_with(text, "repeat ") && ends_with(text, ":")) {
+        char *inner = without_trailing_colon(text);
+        char *body = slice_trim(inner, 7, strlen(inner));
+        char *count = NULL;
+        char *name = NULL;
+        FastStmt *stmt = NULL;
+        if (partition_keyword(body, " times as ", &count, &name) && fast_parse_name_target(name)) {
+            stmt = fast_stmt_new(FAST_STMT_REPEAT_AS, line->line_no, text);
+            stmt->name = xstrdup(name);
+        } else {
+            free(count);
+            free(name);
+            count = NULL;
+            name = NULL;
+            if (partition_keyword(body, " times", &count, &name) && name && name[0] == '\0') {
+                stmt = fast_stmt_new(FAST_STMT_REPEAT, line->line_no, text);
+            }
+        }
+        if (!stmt || !fast_parse_expr_or_unsupported(count, &stmt->expr)) {
+            fast_stmt_free(stmt);
+            free(inner);
+            free(body);
+            free(count);
+            free(name);
+            return 0;
+        }
+        free(inner);
+        free(body);
+        free(count);
+        free(name);
+        parser->pos++;
+        if (!fast_parse_block(parser, &stmt->body, 1)) {
+            fast_stmt_free(stmt);
+            return 0;
+        }
+        fast_stmt_list_add(out, stmt);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int fast_parse_block(FastParser *parser, FastStmtList *out, int needs_end) {
+    while (parser->pos < parser->count) {
+        const char *text = parser->items[parser->pos].text;
+        if (strcmp(text, "end") == 0) {
+            parser->pos++;
+            return 1;
+        }
+        if (starts_with(text, "elif ") || strcmp(text, "else:") == 0 || starts_with(text, "for each ") ||
+            starts_with(text, "def ") || starts_with(text, "ask ") || starts_with(text, "read ") ||
+            starts_with(text, "write ") || starts_with(text, "put ") || starts_with(text, "remove ") ||
+            starts_with(text, "empty ") || starts_with(text, "import ")) {
+            return 0;
+        }
+        if (!fast_parse_statement(parser, out)) {
+            return 0;
+        }
+    }
+    return needs_end ? 0 : 1;
+}
+
+static int fast_parse_source(const char *src, FastStmtList *program) {
+    FastParser parser;
+    parser.items = NULL;
+    parser.count = 0;
+    parser.cap = 0;
+    parser.pos = 0;
+    parser.unsupported = 0;
+    fast_stmt_list_init(program);
 
     char *work = xstrdup(src);
     int line_no = 0;
@@ -1227,7 +2738,234 @@ static int compile_source_to_c(const char *source_path, const char *src, StringB
         char *without_comment = strip_comment_copy(line);
         char *trimmed = trim_in_place(without_comment);
         if (trimmed[0]) {
-            compile_statement(&compiler, line_no, trimmed);
+            fast_parser_add_line(&parser, line_no, trimmed);
+        }
+        free(without_comment);
+        line = strtok(NULL, "\n");
+    }
+    free(work);
+
+    int ok = fast_parse_block(&parser, program, 0) && parser.pos == parser.count;
+    fast_parser_free(&parser);
+    if (!ok) {
+        fast_stmt_list_free(program);
+    }
+    return ok;
+}
+
+static void fast_collect_expr_names(FastExpr *expr, NameList *names) {
+    if (!expr) {
+        return;
+    }
+    if (expr->kind == FAST_EXPR_NAME) {
+        names_add(names, expr->text);
+    }
+    fast_collect_expr_names(expr->left, names);
+    fast_collect_expr_names(expr->right, names);
+}
+
+static void fast_collect_stmt_names(FastStmtList *list, NameList *names) {
+    for (size_t i = 0; i < list->count; i++) {
+        FastStmt *stmt = list->items[i];
+        if (stmt->name) {
+            names_add(names, stmt->name);
+        }
+        fast_collect_expr_names(stmt->expr, names);
+        fast_collect_stmt_names(&stmt->body, names);
+    }
+}
+
+static char *fast_expr_to_c(FastExpr *expr) {
+    if (expr->kind == FAST_EXPR_NUMBER || expr->kind == FAST_EXPR_NAME) {
+        return xstrdup(expr->text);
+    }
+
+    char *left = fast_expr_to_c(expr->left);
+    char *right = fast_expr_to_c(expr->right);
+    char *out = NULL;
+    if (strcmp(expr->op, "and") == 0) {
+        out = format_text("((%s) != 0.0 && (%s) != 0.0)", left, right);
+    } else if (strcmp(expr->op, "or") == 0) {
+        out = format_text("((%s) != 0.0 || (%s) != 0.0)", left, right);
+    } else {
+        out = format_text("((%s) %s (%s))", left, expr->op, right);
+    }
+    free(left);
+    free(right);
+    return out;
+}
+
+static void fast_emit_indent(StringBuilder *out, int indent) {
+    for (int i = 0; i < indent; i++) {
+        sb_append(out, "    ");
+    }
+}
+
+static void fast_emit_line(StringBuilder *out, int indent, const char *fmt, ...) {
+    fast_emit_indent(out, indent);
+    va_list args;
+    va_start(args, fmt);
+    va_list copy;
+    va_copy(copy, args);
+    int needed = vsnprintf(NULL, 0, fmt, copy);
+    va_end(copy);
+    if (needed >= 0) {
+        char *buf = (char *)xmalloc((size_t)needed + 1);
+        vsnprintf(buf, (size_t)needed + 1, fmt, args);
+        sb_append(out, buf);
+        free(buf);
+    }
+    va_end(args);
+    sb_append(out, "\n");
+}
+
+static void fast_emit_stmt_list(StringBuilder *out, FastStmtList *list, int indent, int *temp_counter) {
+    for (size_t i = 0; i < list->count; i++) {
+        FastStmt *stmt = list->items[i];
+        char *expr = stmt->expr ? fast_expr_to_c(stmt->expr) : NULL;
+        switch (stmt->kind) {
+            case FAST_STMT_SET:
+                fast_emit_line(out, indent, "%s = %s;", stmt->name, expr);
+                break;
+            case FAST_STMT_ADD:
+                fast_emit_line(out, indent, "%s += %s;", stmt->name, expr);
+                break;
+            case FAST_STMT_SUBTRACT:
+                fast_emit_line(out, indent, "%s -= %s;", stmt->name, expr);
+                break;
+            case FAST_STMT_MULTIPLY:
+                fast_emit_line(out, indent, "%s *= %s;", stmt->name, expr);
+                break;
+            case FAST_STMT_DIVIDE:
+                fast_emit_line(out, indent, "%s /= %s;", stmt->name, expr);
+                break;
+            case FAST_STMT_SAY:
+                fast_emit_line(out, indent, stmt->without_newline ? "bpp_fast_print_number(%s, 0);" : "bpp_fast_print_number(%s, 1);", expr);
+                break;
+            case FAST_STMT_IF:
+                fast_emit_line(out, indent, "if ((%s) != 0.0) {", expr);
+                fast_emit_stmt_list(out, &stmt->body, indent + 1, temp_counter);
+                fast_emit_line(out, indent, "}");
+                break;
+            case FAST_STMT_WHILE:
+                fast_emit_line(out, indent, "while ((%s) != 0.0) {", expr);
+                fast_emit_stmt_list(out, &stmt->body, indent + 1, temp_counter);
+                fast_emit_line(out, indent, "}");
+                break;
+            case FAST_STMT_FOREVER:
+                fast_emit_line(out, indent, "while (1) {");
+                fast_emit_stmt_list(out, &stmt->body, indent + 1, temp_counter);
+                fast_emit_line(out, indent, "}");
+                break;
+            case FAST_STMT_REPEAT: {
+                int temp = ++(*temp_counter);
+                fast_emit_line(out, indent, "for (long __bpp_fast_i_%d = 0, __bpp_fast_limit_%d = (long)(%s); __bpp_fast_i_%d < __bpp_fast_limit_%d; __bpp_fast_i_%d++) {", temp, temp, expr, temp, temp, temp);
+                fast_emit_stmt_list(out, &stmt->body, indent + 1, temp_counter);
+                fast_emit_line(out, indent, "}");
+                break;
+            }
+            case FAST_STMT_REPEAT_AS: {
+                int temp = ++(*temp_counter);
+                fast_emit_line(out, indent, "for (long __bpp_fast_i_%d = 1, __bpp_fast_limit_%d = (long)(%s); __bpp_fast_i_%d <= __bpp_fast_limit_%d; __bpp_fast_i_%d++) {", temp, temp, expr, temp, temp, temp);
+                fast_emit_line(out, indent + 1, "%s = (double)__bpp_fast_i_%d;", stmt->name, temp);
+                fast_emit_stmt_list(out, &stmt->body, indent + 1, temp_counter);
+                fast_emit_line(out, indent, "}");
+                break;
+            }
+            case FAST_STMT_STOP:
+                fast_emit_line(out, indent, "break;");
+                break;
+            case FAST_STMT_NEXT:
+                fast_emit_line(out, indent, "continue;");
+                break;
+        }
+        free(expr);
+    }
+}
+
+static int try_compile_fast_source_to_c(const char *source_path, const char *src, StringBuilder *out) {
+    FastStmtList program;
+    if (!fast_parse_source(src, &program)) {
+        return 0;
+    }
+
+    NameList names;
+    names_init(&names);
+    fast_collect_stmt_names(&program, &names);
+
+    sb_append(out, "/* Generated by native B++ fast numeric backend. */\n");
+    if (source_path) {
+        sb_appendf(out, "/* Source: %s */\n\n", source_path);
+    }
+    sb_append(out, "#include <math.h>\n#include <stdio.h>\n\n");
+    sb_append(out, "static void bpp_fast_print_number(double value, int newline) {\n");
+    sb_append(out, "    if (fabs(value - (long long)value) < 0.0000001) printf(\"%lld\", (long long)value);\n");
+    sb_append(out, "    else printf(\"%g\", value);\n");
+    sb_append(out, "    if (newline) putchar('\\n');\n");
+    sb_append(out, "}\n\n");
+    sb_append(out, "int main(void) {\n");
+    for (size_t i = 0; i < names.count; i++) {
+        fast_emit_line(out, 1, "double %s = 0.0;", names.items[i]);
+    }
+    if (names.count > 0) {
+        sb_append(out, "\n");
+    }
+    int temp_counter = 0;
+    fast_emit_stmt_list(out, &program, 1, &temp_counter);
+    sb_append(out, "    return 0;\n");
+    sb_append(out, "}\n");
+
+    names_free(&names);
+    fast_stmt_list_free(&program);
+    return 1;
+}
+
+static int compile_source_to_c(const char *source_path, const char *src, StringBuilder *out) {
+    if (try_compile_fast_source_to_c(source_path, src, out)) {
+        return 1;
+    }
+
+    Compiler compiler;
+    compiler_init(&compiler, source_path);
+
+    char *work = xstrdup(src);
+    int line_no = 0;
+    int first_code_seen = 0;
+    char *line = strtok(work, "\n");
+    while (line) {
+        line_no++;
+        size_t n = strlen(line);
+        if (n > 0 && line[n - 1] == '\r') {
+            line[n - 1] = '\0';
+        }
+        char *without_comment = strip_comment_copy(line);
+        char *trimmed = trim_in_place(without_comment);
+        if (trimmed[0]) {
+            if (compiler.skip_depth > 0) {
+                if (strcmp(trimmed, "end") == 0) {
+                    compiler.skip_depth--;
+                } else if (statement_starts_block(trimmed)) {
+                    compiler.skip_depth++;
+                }
+            } else {
+                if (starts_with(trimmed, "<bpp ")) {
+                    if (first_code_seen) {
+                        compile_error(&compiler, line_no, trimmed, "B++ directives must be the first code line.", "put <bpp unpackage os> before any code");
+                    } else if (strcmp(trimmed, "<bpp unpackage os>") == 0) {
+                        compiler.os_enabled = 1;
+                        first_code_seen = 1;
+                    } else if (starts_with(trimmed, "<bpp unpackage ")) {
+                        compile_error(&compiler, line_no, trimmed, "Unknown B++ module.", "available module: os");
+                        first_code_seen = 1;
+                    } else {
+                        compile_error(&compiler, line_no, trimmed, "Invalid B++ directive.", "<bpp unpackage os>");
+                        first_code_seen = 1;
+                    }
+                } else {
+                    first_code_seen = 1;
+                    compile_statement(&compiler, line_no, trimmed);
+                }
+            }
         }
         free(without_comment);
         line = strtok(NULL, "\n");
@@ -1266,6 +3004,12 @@ typedef struct {
     char *tag;
     char *asset_url;
 } UpdateInfo;
+
+static char g_update_error[256];
+
+static void set_update_error(const char *message) {
+    snprintf(g_update_error, sizeof(g_update_error), "%s", message);
+}
 
 static void update_info_free(UpdateInfo *info) {
     free(info->tag);
@@ -1458,14 +3202,22 @@ static int fetch_update_info(UpdateInfo *info) {
 
     char *json = NULL;
     if (!http_get_text(BPP_UPDATE_API, &json)) {
+        set_update_error("could not reach the GitHub Releases API");
         return 0;
     }
 
     info->tag = json_string_after(json, "\"tag_name\"");
+    if (!info->tag) {
+        set_update_error("latest GitHub Release was not found; create a published release, not only a tag");
+        free(json);
+        return 0;
+    }
+
     info->asset_url = json_release_asset_url(json, "bpp.exe");
     free(json);
 
-    if (!info->tag || !info->asset_url) {
+    if (!info->asset_url) {
+        set_update_error("latest GitHub Release is missing the required bpp.exe asset");
         update_info_free(info);
         return 0;
     }
@@ -1569,7 +3321,7 @@ static int command_set_auto_updates(int enabled) {
 static int command_check_update(void) {
     UpdateInfo info;
     if (!fetch_update_info(&info)) {
-        fprintf(stderr, "bpp: could not check GitHub Releases for updates.\n");
+        fprintf(stderr, "bpp: could not check GitHub Releases for updates: %s.\n", g_update_error);
         return 1;
     }
 
@@ -1632,7 +3384,7 @@ static int launch_update_script(const char *downloaded_exe, const char *target_e
 static int command_update(void) {
     UpdateInfo info;
     if (!fetch_update_info(&info)) {
-        fprintf(stderr, "bpp: could not check GitHub Releases for updates.\n");
+        fprintf(stderr, "bpp: could not check GitHub Releases for updates: %s.\n", g_update_error);
         return 1;
     }
 

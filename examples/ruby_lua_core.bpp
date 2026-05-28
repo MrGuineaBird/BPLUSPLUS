@@ -1,0 +1,47 @@
+-- Ruby/Lua-style B++ syntax
+
+name = "Ada"
+score = 7
+ready = false
+const max_score = 10
+
+function square(x):
+    return x ^ 2
+end
+
+if score == max_score:
+    say "perfect"
+elseif score % 2 == 1:
+    say "odd score"
+else:
+    say "even score"
+end
+
+unless ready:
+    say "not ready yet"
+end
+
+for i from 1 to 3:
+    say "range " + i
+end
+
+for i from 5 down to 1 step 2:
+    say "down " + i
+end
+
+set names to ["Ada", "Bea", "Kai"]
+
+for friend in names:
+    if friend == "Bea":
+        continue
+    end
+
+    say "hi " + friend
+end
+
+count = 0
+
+until count == 2:
+    count = count + 1
+    say square(count)
+end
