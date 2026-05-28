@@ -3474,11 +3474,156 @@ static void maybe_auto_check_updates(void) {
 
 #endif
 
+static char *quote_shell_arg(const char *text) {
+    StringBuilder out;
+    sb_init(&out);
+    sb_append(&out, "\"");
+    for (size_t i = 0; text[i]; i++) {
+        if (text[i] == '"') {
+            sb_append(&out, "\\\"");
+        } else {
+            char tmp[2] = {text[i], '\0'};
+            sb_append(&out, tmp);
+        }
+    }
+    sb_append(&out, "\"");
+    char *result = xstrdup(out.data);
+    sb_free(&out);
+    return result;
+}
+
+static char *temp_path_with_ext(const char *tag, const char *ext) {
+    char dir[4096];
+#ifdef _WIN32
+    DWORD got = GetTempPathA((DWORD)sizeof(dir), dir);
+    if (got == 0 || got >= sizeof(dir)) {
+        snprintf(dir, sizeof(dir), ".\\");
+    }
+    int pid = (int)GetCurrentProcessId();
+    long tick = (long)GetTickCount();
+#else
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !tmp[0]) {
+        tmp = "/tmp";
+    }
+    snprintf(dir, sizeof(dir), "%s/", tmp);
+    int pid = (int)(time(NULL) % 100000);
+    long tick = (long)clock();
+#endif
+    return format_text("%sbpp_%s_%d_%ld_%lld%s", dir, tag, pid, tick, (long long)time(NULL), ext);
+}
+
+#ifdef _WIN32
+static const char *find_vsdevcmd(void) {
+    static const char *const candidates[] = {
+        "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\Common7\\Tools\\VsDevCmd.bat",
+        "C:\\Program Files\\Microsoft Visual Studio\\18\\BuildTools\\Common7\\Tools\\VsDevCmd.bat",
+        "C:\\Program Files\\Microsoft Visual Studio\\18\\Professional\\Common7\\Tools\\VsDevCmd.bat",
+        "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\Common7\\Tools\\VsDevCmd.bat",
+        "C:\\Program Files\\Microsoft Visual Studio\\17\\Community\\Common7\\Tools\\VsDevCmd.bat",
+        "C:\\Program Files\\Microsoft Visual Studio\\17\\BuildTools\\Common7\\Tools\\VsDevCmd.bat",
+        "C:\\Program Files\\Microsoft Visual Studio\\17\\Professional\\Common7\\Tools\\VsDevCmd.bat",
+        "C:\\Program Files\\Microsoft Visual Studio\\17\\Enterprise\\Common7\\Tools\\VsDevCmd.bat"
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        DWORD attrs = GetFileAttributesA(candidates[i]);
+        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            return candidates[i];
+        }
+    }
+    return NULL;
+}
+
+static int write_windows_build_script(const char *script_path, const char *c_path, const char *exe_path) {
+    FILE *script = fopen(script_path, "w");
+    if (!script) {
+        return 0;
+    }
+    const char *vsdevcmd = find_vsdevcmd();
+    fprintf(script, "@echo off\r\n");
+    fprintf(script, "where cl >nul 2>nul\r\n");
+    fprintf(script, "if not errorlevel 1 goto build\r\n");
+    if (vsdevcmd) {
+        fprintf(script, "call \"%s\" -arch=x64 >nul\r\n", vsdevcmd);
+        fprintf(script, "if errorlevel 1 exit /b %%errorlevel%%\r\n");
+    } else {
+        fprintf(script, "echo bpp: C compiler not found. Open a Visual Studio Developer Command Prompt or install GCC/Clang.\r\n");
+        fprintf(script, "exit /b 1\r\n");
+    }
+    fprintf(script, ":build\r\n");
+    fprintf(script, "set \"BPP_BUILD_LOG=%%TEMP%%\\bpp_build_%%RANDOM%%.log\"\r\n");
+    fprintf(script, "set \"BPP_BUILD_OBJ=%%TEMP%%\\bpp_build_%%RANDOM%%.obj\"\r\n");
+    fprintf(script, "set \"BPP_BUILD_PDB=%%TEMP%%\\bpp_build_%%RANDOM%%.pdb\"\r\n");
+    fprintf(script, "cl /nologo /Fe:\"%s\" /Fo\"%%BPP_BUILD_OBJ%%\" /Fd\"%%BPP_BUILD_PDB%%\" \"%s\" > \"%%BPP_BUILD_LOG%%\" 2>&1\r\n", exe_path, c_path);
+    fprintf(script, "set BPP_BUILD_CODE=%%errorlevel%%\r\n");
+    fprintf(script, "if not \"%%BPP_BUILD_CODE%%\"==\"0\" type \"%%BPP_BUILD_LOG%%\"\r\n");
+    fprintf(script, "del \"%%BPP_BUILD_OBJ%%\" >nul 2>nul\r\n");
+    fprintf(script, "del \"%%BPP_BUILD_PDB%%\" >nul 2>nul\r\n");
+    fprintf(script, "del \"%%BPP_BUILD_LOG%%\" >nul 2>nul\r\n");
+    fprintf(script, "exit /b %%BPP_BUILD_CODE%%\r\n");
+    fclose(script);
+    return 1;
+}
+#endif
+
+static int build_c_executable(const char *c_path, const char *exe_path) {
+    int status = 1;
+    const char *cc = getenv("BPP_CC");
+    if (cc && cc[0]) {
+        char *quoted_c = quote_shell_arg(c_path);
+        char *quoted_exe = quote_shell_arg(exe_path);
+        char *command = format_text("%s %s -o %s -lm", cc, quoted_c, quoted_exe);
+        status = system(command);
+        free(command);
+        free(quoted_c);
+        free(quoted_exe);
+        return status == 0;
+    }
+
+#ifdef _WIN32
+    char *script_path = temp_path_with_ext("build", ".cmd");
+    if (!write_windows_build_script(script_path, c_path, exe_path)) {
+        fprintf(stderr, "bpp: could not create temporary build script.\n");
+        free(script_path);
+        return 0;
+    }
+    char *quoted_script = quote_shell_arg(script_path);
+    char *command = format_text("cmd /d /s /c %s", quoted_script);
+    status = system(command);
+    DeleteFileA(script_path);
+    free(command);
+    free(quoted_script);
+    free(script_path);
+#else
+    char *quoted_c = quote_shell_arg(c_path);
+    char *quoted_exe = quote_shell_arg(exe_path);
+    char *command = format_text("cc %s -o %s -lm", quoted_c, quoted_exe);
+    status = system(command);
+    free(command);
+    free(quoted_c);
+    free(quoted_exe);
+#endif
+    return status == 0;
+}
+
+static int run_executable(const char *exe_path) {
+    char *quoted_exe = quote_shell_arg(exe_path);
+    int status = system(quoted_exe);
+    free(quoted_exe);
+    return status;
+}
+
 static void print_help(void) {
     printf("B++ compiler %s\n", BPP_VERSION);
-    printf("Usage: bpp <source.bpp> [-o output.c]\n");
+    printf("Usage: bpp <source.bpp> [options]\n");
     printf("\n");
-    printf("Compiles B++ source to C source.\n");
+    printf("Runs B++ by compiling through C behind the scenes.\n");
+    printf("\n");
+    printf("Build options:\n");
+    printf("  bpp file.bpp             compile and run a B++ program\n");
+    printf("  bpp file.bpp -o file.c   write generated C source\n");
+    printf("  bpp file.bpp --emit-c    print generated C source\n");
+    printf("  bpp file.bpp --exe app   build a native executable\n");
     printf("\n");
     printf("Commands:\n");
     printf("  bpp check-update    check GitHub Releases for a newer B++\n");
@@ -3490,7 +3635,10 @@ static void print_help(void) {
 
 int main(int argc, char **argv) {
     const char *source_path = NULL;
-    const char *output_path = NULL;
+    const char *c_output_path = NULL;
+    const char *exe_output_path = NULL;
+    int emit_c = 0;
+    int run_after_build = 1;
 
     if (argc == 2) {
         if (strcmp(argv[1], "updates") == 0) {
@@ -3519,8 +3667,27 @@ int main(int argc, char **argv) {
             printf("B++ compiler %s\n", BPP_VERSION);
             return 0;
         }
+        if (strcmp(argv[i], "run") == 0 && !source_path) {
+            run_after_build = 1;
+            continue;
+        }
+        if (strcmp(argv[i], "build") == 0 && !source_path) {
+            run_after_build = 0;
+            continue;
+        }
+        if (strcmp(argv[i], "--emit-c") == 0 || strcmp(argv[i], "emit-c") == 0) {
+            emit_c = 1;
+            run_after_build = 0;
+            continue;
+        }
+        if (strcmp(argv[i], "--exe") == 0 && i + 1 < argc) {
+            exe_output_path = argv[++i];
+            run_after_build = 0;
+            continue;
+        }
         if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) && i + 1 < argc) {
-            output_path = argv[++i];
+            c_output_path = argv[++i];
+            run_after_build = 0;
             continue;
         }
         if (!source_path) {
@@ -3552,16 +3719,71 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (output_path) {
-        if (!write_file(output_path, generated.data)) {
+    if (c_output_path) {
+        if (!write_file(c_output_path, generated.data)) {
             sb_free(&generated);
             return 1;
         }
-        printf("Compiled %s -> %s\n", source_path, output_path);
-    } else {
-        fputs(generated.data, stdout);
+        printf("Compiled %s -> %s\n", source_path, c_output_path);
+        sb_free(&generated);
+        return 0;
     }
 
+    if (emit_c) {
+        fputs(generated.data, stdout);
+        sb_free(&generated);
+        return 0;
+    }
+
+    if (!run_after_build && !exe_output_path) {
+        fprintf(stderr, "bpp: build needs --exe output.exe\n");
+        sb_free(&generated);
+        return 2;
+    }
+
+    const char *temp_exe_ext =
+#ifdef _WIN32
+        ".exe";
+#else
+        "";
+#endif
+    char *temp_c_path = temp_path_with_ext("run", ".c");
+    char *built_exe_path = exe_output_path ? xstrdup(exe_output_path) : temp_path_with_ext("run", temp_exe_ext);
+    int using_temp_exe = exe_output_path ? 0 : 1;
+
+    if (!write_file(temp_c_path, generated.data)) {
+        sb_free(&generated);
+        free(temp_c_path);
+        free(built_exe_path);
+        return 1;
+    }
     sb_free(&generated);
-    return 0;
+
+    if (!build_c_executable(temp_c_path, built_exe_path)) {
+        fprintf(stderr, "bpp: could not build native executable from generated C.\n");
+        remove(temp_c_path);
+        if (using_temp_exe) {
+            remove(built_exe_path);
+        }
+        free(temp_c_path);
+        free(built_exe_path);
+        return 1;
+    }
+
+    remove(temp_c_path);
+
+    if (!run_after_build) {
+        printf("Built %s -> %s\n", source_path, built_exe_path);
+        free(temp_c_path);
+        free(built_exe_path);
+        return 0;
+    }
+
+    int run_status = run_executable(built_exe_path);
+    if (using_temp_exe) {
+        remove(built_exe_path);
+    }
+    free(temp_c_path);
+    free(built_exe_path);
+    return run_status == 0 ? 0 : 1;
 }
