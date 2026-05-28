@@ -13,7 +13,7 @@ B++ -> C -> native executable
 
 ## Status
 
-B++ version: `4.2`
+B++ version: `4.2.1`
 
 Current compiler:
 
@@ -208,8 +208,8 @@ On Windows, `build.bat` also builds the native setup wizard:
 B++ Setup.exe
 ```
 
-The `.bpp` file association currently compiles a `.bpp` file to C. Direct
-double-click run mode is still being built for the native compiler.
+The compiler now supports direct run mode: `bpp file.bpp` compiles through C
+behind the scenes and runs the program.
 
 ## Quick Start
 
@@ -220,30 +220,29 @@ set name to "B++"
 say "Hello " + name
 ```
 
-Compile it to C:
+Run it:
+
+```sh
+bpp hello.bpp
+```
+
+Behind the scenes, B++ still compiles through C. To keep the generated C file:
 
 ```sh
 bpp hello.bpp -o hello.c
 ```
 
-Compile the generated C:
+To build a native executable without running it:
 
 ```sh
-cc hello.c -o hello -lm
+bpp hello.bpp --exe hello
 ```
 
-Run it:
-
-```sh
-./hello
-```
-
-On Windows with MinGW:
+On Windows:
 
 ```powershell
-.\bpp.exe .\hello.bpp -o .\hello.c
-gcc .\hello.c -o .\hello.exe
-.\hello.exe
+.\bpp.exe .\hello.bpp
+.\bpp.exe .\hello.bpp --exe .\hello.exe
 ```
 
 ## Examples
@@ -259,12 +258,10 @@ examples/os_module.bpp
 examples/everything_showcase.bpp
 ```
 
-Compile an example:
+Run an example:
 
 ```sh
-bpp example.bpp -o example.c
-cc example.c -o example -lm
-./example
+bpp example.bpp
 ```
 
 ## Fast Numeric Backend
@@ -303,7 +300,9 @@ while the fast compiler grows feature by feature.
 
 ```text
 bpp file.bpp -o file.c       compile B++ to C
-bpp file.bpp                 print generated C to stdout
+bpp file.bpp                 compile and run a B++ program
+bpp file.bpp --emit-c        print generated C to stdout
+bpp file.bpp --exe app       build a native executable
 bpp --version                show compiler version
 bpp --help                   show help
 bpp check-update             check GitHub Releases for an update
@@ -760,10 +759,8 @@ Build the compiler:
 make
 ```
 
-Compile the demo:
+Run the demo:
 
 ```sh
-./bpp examples/native_demo.bpp -o native_demo.c
-cc native_demo.c -o native_demo -lm
-./native_demo
+./bpp examples/native_demo.bpp
 ```
