@@ -12,6 +12,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <stdio.h>
 #include <string.h>
@@ -342,14 +343,139 @@ static int set_default_value(const char *subkey, const char *value) {
     return rc == ERROR_SUCCESS;
 }
 
-static int register_bpp_files(const char *bpp_exe) {
+static void write_le16(FILE *file, unsigned int value) {
+    unsigned char bytes[2];
+    bytes[0] = (unsigned char)(value & 0xff);
+    bytes[1] = (unsigned char)((value >> 8) & 0xff);
+    fwrite(bytes, 1, sizeof(bytes), file);
+}
+
+static void write_le32(FILE *file, unsigned int value) {
+    unsigned char bytes[4];
+    bytes[0] = (unsigned char)(value & 0xff);
+    bytes[1] = (unsigned char)((value >> 8) & 0xff);
+    bytes[2] = (unsigned char)((value >> 16) & 0xff);
+    bytes[3] = (unsigned char)((value >> 24) & 0xff);
+    fwrite(bytes, 1, sizeof(bytes), file);
+}
+
+static void icon_pixel(unsigned char *pixels, int width, int height, int x, int y,
+                       unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
+    if (x < 0 || y < 0 || x >= width || y >= height) {
+        return;
+    }
+
+    unsigned char *p = pixels + ((y * width + x) * 4);
+    p[0] = b;
+    p[1] = g;
+    p[2] = r;
+    p[3] = a;
+}
+
+static void icon_rect(unsigned char *pixels, int width, int height, int left, int top, int right, int bottom,
+                      unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
+    for (int y = top; y <= bottom; y++) {
+        for (int x = left; x <= right; x++) {
+            icon_pixel(pixels, width, height, x, y, r, g, b, a);
+        }
+    }
+}
+
+static int write_bpp_file_icon(const char *path) {
+    enum { ICON_W = 48, ICON_H = 48 };
+    enum { XOR_SIZE = ICON_W * ICON_H * 4 };
+    enum { MASK_STRIDE = ((ICON_W + 31) / 32) * 4 };
+    enum { MASK_SIZE = MASK_STRIDE * ICON_H };
+    enum { DIB_SIZE = 40 + XOR_SIZE + MASK_SIZE };
+    unsigned char pixels[XOR_SIZE];
+    unsigned char mask[MASK_SIZE];
+
+    memset(pixels, 0, sizeof(pixels));
+    memset(mask, 0, sizeof(mask));
+
+    icon_rect(pixels, ICON_W, ICON_H, 10, 7, 38, 45, 0, 0, 0, 42);
+    icon_rect(pixels, ICON_W, ICON_H, 7, 4, 35, 43, 248, 251, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 7, 4, 35, 4, 188, 199, 214, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 7, 4, 7, 43, 188, 199, 214, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 35, 15, 35, 43, 188, 199, 214, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 7, 43, 35, 43, 188, 199, 214, 255);
+
+    for (int y = 4; y <= 15; y++) {
+        int x_start = 24 + (y - 4);
+        for (int x = x_start; x <= 35; x++) {
+            icon_pixel(pixels, ICON_W, ICON_H, x, y, 224, 235, 247, 255);
+        }
+    }
+    for (int i = 0; i <= 11; i++) {
+        icon_pixel(pixels, ICON_W, ICON_H, 24 + i, 4 + i, 166, 181, 200, 255);
+    }
+
+    icon_rect(pixels, ICON_W, ICON_H, 12, 23, 34, 39, 31, 96, 196, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 12, 38, 34, 39, 19, 66, 148, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 12, 23, 34, 23, 79, 141, 225, 255);
+
+    icon_rect(pixels, ICON_W, ICON_H, 15, 26, 16, 36, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 17, 26, 22, 27, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 17, 31, 22, 32, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 17, 36, 22, 37, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 22, 28, 23, 30, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 22, 33, 23, 35, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 26, 29, 31, 30, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 28, 27, 29, 32, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 26, 35, 31, 36, 255, 255, 255, 255);
+    icon_rect(pixels, ICON_W, ICON_H, 28, 33, 29, 38, 255, 255, 255, 255);
+
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        return 0;
+    }
+
+    write_le16(file, 0);
+    write_le16(file, 1);
+    write_le16(file, 1);
+    fputc(ICON_W, file);
+    fputc(ICON_H, file);
+    fputc(0, file);
+    fputc(0, file);
+    write_le16(file, 1);
+    write_le16(file, 32);
+    write_le32(file, DIB_SIZE);
+    write_le32(file, 6 + 16);
+
+    write_le32(file, 40);
+    write_le32(file, ICON_W);
+    write_le32(file, ICON_H * 2);
+    write_le16(file, 1);
+    write_le16(file, 32);
+    write_le32(file, 0);
+    write_le32(file, XOR_SIZE + MASK_SIZE);
+    write_le32(file, 0);
+    write_le32(file, 0);
+    write_le32(file, 0);
+    write_le32(file, 0);
+
+    for (int y = ICON_H - 1; y >= 0; y--) {
+        fwrite(pixels + (y * ICON_W * 4), 1, ICON_W * 4, file);
+    }
+    fwrite(mask, 1, sizeof(mask), file);
+
+    int ok = !ferror(file);
+    fclose(file);
+    return ok;
+}
+
+static void refresh_file_associations(void) {
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
+}
+
+static int register_bpp_files(const char *bpp_exe, const char *icon_path) {
     char command[PATH_LIMIT * 2];
     char icon[PATH_LIMIT * 2];
 
     snprintf(command, sizeof(command), "cmd.exe /k \"\"%s\" \"%%1\" -o \"%%1.c\"\"", bpp_exe);
-    snprintf(icon, sizeof(icon), "\"%s\",0", bpp_exe);
+    snprintf(icon, sizeof(icon), "\"%s\",0", icon_path);
 
-    return
+    int ok =
         set_default_value("Software\\Classes\\.bpp", "Bpp.Source") &&
         set_default_value("Software\\Classes\\Bpp.Source", "B++ Source File") &&
         set_default_value("Software\\Classes\\Bpp.Source\\DefaultIcon", icon) &&
@@ -360,11 +486,17 @@ static int register_bpp_files(const char *bpp_exe) {
         set_default_value("Software\\Classes\\Bpp.Source\\shell\\open\\command", command) &&
         set_default_value("Software\\Classes\\Bpp.Source\\shell\\edit", "Edit") &&
         set_default_value("Software\\Classes\\Bpp.Source\\shell\\edit\\command", "notepad.exe \"%1\"");
+
+    if (ok) {
+        refresh_file_associations();
+    }
+    return ok;
 }
 
 static void unregister_bpp_files(void) {
     RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\.bpp");
     RegDeleteTreeA(HKEY_CURRENT_USER, "Software\\Classes\\Bpp.Source");
+    refresh_file_associations();
 }
 
 static int write_text_file(const char *path, const char *text) {
@@ -386,6 +518,7 @@ static int install_bpp(HWND hwnd, const char *install_root, int add_path, int re
     char install_bin[PATH_LIMIT];
     char target_bpp[PATH_LIMIT];
     char target_alias[PATH_LIMIT];
+    char target_icon[PATH_LIMIT];
     char target_setup[PATH_LIMIT];
 
     set_status("Installing...");
@@ -403,6 +536,7 @@ static int install_bpp(HWND hwnd, const char *install_root, int add_path, int re
     path_join(install_bin, sizeof(install_bin), install_root, "bin");
     path_join(target_bpp, sizeof(target_bpp), install_bin, "bpp.exe");
     path_join(target_alias, sizeof(target_alias), install_bin, "b++.cmd");
+    path_join(target_icon, sizeof(target_icon), install_bin, "bpp_file.ico");
     path_join(target_setup, sizeof(target_setup), install_root, "B++ Setup.exe");
 
     if (!ensure_directory(install_root) || !ensure_directory(install_bin)) {
@@ -439,12 +573,19 @@ static int install_bpp(HWND hwnd, const char *install_root, int add_path, int re
     }
 
     if (register_files) {
-        if (!register_bpp_files(target_bpp)) {
+        if (!write_bpp_file_icon(target_icon)) {
+            show_error(hwnd, "Could not install the .bpp file icon.");
+            set_status("Install failed.");
+            return 0;
+        }
+        if (!register_bpp_files(target_bpp, target_icon)) {
             show_error(hwnd, "Could not register .bpp files with Windows.");
             set_status("Install failed.");
             return 0;
         }
         add_user_pathext(".BPP");
+    } else {
+        DeleteFileA(target_icon);
     }
 
     broadcast_environment_change();
@@ -457,6 +598,7 @@ static int uninstall_bpp(HWND hwnd, const char *install_root) {
     char install_bin[PATH_LIMIT];
     char target_bpp[PATH_LIMIT];
     char target_alias[PATH_LIMIT];
+    char target_icon[PATH_LIMIT];
     char target_setup[PATH_LIMIT];
     char current_setup[PATH_LIMIT];
 
@@ -465,6 +607,7 @@ static int uninstall_bpp(HWND hwnd, const char *install_root) {
     path_join(install_bin, sizeof(install_bin), install_root, "bin");
     path_join(target_bpp, sizeof(target_bpp), install_bin, "bpp.exe");
     path_join(target_alias, sizeof(target_alias), install_bin, "b++.cmd");
+    path_join(target_icon, sizeof(target_icon), install_bin, "bpp_file.ico");
     path_join(target_setup, sizeof(target_setup), install_root, "B++ Setup.exe");
     GetModuleFileNameA(NULL, current_setup, sizeof(current_setup));
 
@@ -474,6 +617,7 @@ static int uninstall_bpp(HWND hwnd, const char *install_root) {
 
     DeleteFileA(target_bpp);
     DeleteFileA(target_alias);
+    DeleteFileA(target_icon);
 
     if (!same_path_text(current_setup, target_setup)) {
         DeleteFileA(target_setup);

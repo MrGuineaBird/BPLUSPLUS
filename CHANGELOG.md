@@ -1,5 +1,14 @@
 # Changelog
 
+## B++ 4.3
+
+B++ 4.3 adds Lua/Ruby-style tables for keyed data.
+
+- Added table literals with `{ name = value }`.
+- Added multi-line table literals.
+- Added bracket lookup with `table["key"]`.
+- Added numeric list lookup with `list[0]`.
+
 ## B++ 4.2.1
 
 B++ 4.2.1 adds the Ruby/Lua-style syntax pack, the built-in `os` module, and one-step run mode.
@@ -13,6 +22,7 @@ B++ 4.2.1 adds the Ruby/Lua-style syntax pack, the built-in `os` module, and one
 - Added OS commands for folders, files, environment variables, shell command capture, exit codes, process IDs, process killing, and sleeping.
 - Added one-step run mode: `bpp file.bpp` now compiles through C and runs the program.
 - Added `--emit-c` for printing generated C and `--exe` for building native executables.
+- Added a generated `.bpp` file icon to the Windows setup wizard.
 
 ## B++ 4.2
 

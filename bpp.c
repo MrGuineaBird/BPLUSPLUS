@@ -18,6 +18,7 @@
     - while, until, forever
     - stop loop, next loop, break, continue
     - true/false/nothing/nil
+    - tables: { name = value } and table["name"]
 
     - def/function and return
     - ask/read/write
@@ -315,8 +316,8 @@ static int is_reserved_identifier(const char *name) {
         "unsigned", "until", "unpackage", "void", "volatile", "while",
         "write", "function",
 
-        "BPP_BOOL", "BPP_LIST", "BPP_NIL", "BPP_NUMBER", "BPP_STRING",
-        "BppList", "BppType", "BppValue", "FILE", "NULL", "main",
+        "BPP_BOOL", "BPP_LIST", "BPP_NIL", "BPP_NUMBER", "BPP_STRING", "BPP_TABLE",
+        "BppList", "BppTable", "BppTableEntry", "BppType", "BppValue", "FILE", "NULL", "main",
         "size_t", "stdin", "stdout",
 
         "calloc", "exit", "fabs", "fclose", "fflush", "fgetc", "fgets",
@@ -494,6 +495,40 @@ static int partition_assignment(const char *text, char **left, char **right) {
     return 0;
 }
 
+static int brace_delta(const char *text) {
+    int quote = 0;
+    int escaped = 0;
+    int delta = 0;
+    for (size_t i = 0; text[i]; i++) {
+        char ch = text[i];
+        if (escaped) {
+            escaped = 0;
+            continue;
+        }
+        if (quote && ch == '\\') {
+            escaped = 1;
+            continue;
+        }
+        if (ch == '\'' || ch == '"') {
+            if (!quote) {
+                quote = ch;
+            } else if (quote == ch) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (quote) {
+            continue;
+        }
+        if (ch == '{') {
+            delta++;
+        } else if (ch == '}') {
+            delta--;
+        }
+    }
+    return delta;
+}
+
 static int split_top_level_args(const char *text, char ***out_args, size_t *out_count) {
     NameList args;
     names_init(&args);
@@ -581,6 +616,32 @@ static char *to_c_string_literal(const char *literal) {
     return result;
 }
 
+static char *to_c_string_text(const char *text) {
+    StringBuilder out;
+    sb_init(&out);
+    sb_append(&out, "\"");
+    for (size_t i = 0; text[i]; i++) {
+        char ch = text[i];
+        if (ch == '"' || ch == '\\') {
+            sb_append(&out, "\\");
+        }
+        if (ch == '\n') {
+            sb_append(&out, "\\n");
+        } else if (ch == '\r') {
+            sb_append(&out, "\\r");
+        } else if (ch == '\t') {
+            sb_append(&out, "\\t");
+        } else {
+            char tmp[2] = {ch, '\0'};
+            sb_append(&out, tmp);
+        }
+    }
+    sb_append(&out, "\"");
+    char *result = xstrdup(out.data);
+    sb_free(&out);
+    return result;
+}
+
 static int is_number_literal(const char *text) {
     size_t i = 0;
     if (text[i] == '-' || text[i] == '+') {
@@ -603,6 +664,108 @@ static int is_number_literal(const char *text) {
 }
 
 static char *transpile_expr(const char *expr);
+
+static int trailing_index_start(const char *text) {
+    size_t len = strlen(text);
+    if (len < 4 || text[len - 1] != ']') {
+        return -1;
+    }
+
+    int quote = 0;
+    int escaped = 0;
+    int depth = 0;
+    int start = -1;
+    for (size_t i = 0; text[i]; i++) {
+        char ch = text[i];
+        if (escaped) {
+            escaped = 0;
+            continue;
+        }
+        if (quote && ch == '\\') {
+            escaped = 1;
+            continue;
+        }
+        if (ch == '\'' || ch == '"') {
+            if (!quote) {
+                quote = ch;
+            } else if (quote == ch) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (quote) {
+            continue;
+        }
+        if (ch == '[') {
+            if (depth == 0) {
+                start = (int)i;
+            }
+            depth++;
+        } else if (ch == ']') {
+            depth--;
+            if (depth == 0 && text[i + 1] == '\0' && start > 0) {
+                return start;
+            }
+        }
+    }
+    return -1;
+}
+
+static char *transpile_table_key(const char *key) {
+    size_t len = strlen(key);
+    if (is_identifier(key)) {
+        char *literal = to_c_string_text(key);
+        char *out = format_text("bpp_string(%s)", literal);
+        free(literal);
+        return out;
+    }
+    if (len >= 2 && ((key[0] == '"' && key[len - 1] == '"') || (key[0] == '\'' && key[len - 1] == '\''))) {
+        return transpile_expr(key);
+    }
+    if (len >= 2 && key[0] == '[' && key[len - 1] == ']') {
+        char *inner = slice_trim(key, 1, len - 1);
+        char *out = transpile_expr(inner);
+        free(inner);
+        return out;
+    }
+    return transpile_expr(key);
+}
+
+static char *transpile_table_literal(const char *text) {
+    size_t len = strlen(text);
+    char *inner = slice_trim(text, 1, len - 1);
+    char **entries = NULL;
+    size_t entry_count = 0;
+    split_top_level_args(inner, &entries, &entry_count);
+
+    StringBuilder call;
+    sb_init(&call);
+    sb_appendf(&call, "bpp_table_of(%zu", entry_count);
+    for (size_t i = 0; i < entry_count; i++) {
+        char *key = NULL;
+        char *value = NULL;
+        if (!partition_assignment(entries[i], &key, &value)) {
+            char *bad_key = to_c_string_text("<invalid>");
+            sb_appendf(&call, ", bpp_string(%s), bpp_nil()", bad_key);
+            free(bad_key);
+        } else {
+            char *key_c = transpile_table_key(key);
+            char *value_c = transpile_expr(value);
+            sb_appendf(&call, ", %s, %s", key_c, value_c);
+            free(key_c);
+            free(value_c);
+        }
+        free(key);
+        free(value);
+    }
+    sb_append(&call, ")");
+
+    char *out = xstrdup(call.data);
+    sb_free(&call);
+    free_split_args(entries, entry_count);
+    free(inner);
+    return out;
+}
 
 static char *transpile_binary(const char *expr, const char *token, const char *function_name) {
     char *left = NULL;
@@ -693,6 +856,29 @@ static char *transpile_expr(const char *expr) {
         sb_free(&call);
         free_split_args(args, arg_count);
         free(inner);
+        free(copy);
+        return out;
+    }
+    if (strcmp(text, "{}") == 0) {
+        free(copy);
+        return xstrdup("bpp_table()");
+    }
+    if (len >= 2 && text[0] == '{' && text[len - 1] == '}') {
+        char *out = transpile_table_literal(text);
+        free(copy);
+        return out;
+    }
+    int index_start = trailing_index_start(text);
+    if (index_start > 0) {
+        char *target = slice_trim(text, 0, (size_t)index_start);
+        char *key = slice_trim(text, (size_t)index_start + 1, len - 1);
+        char *target_c = transpile_expr(target);
+        char *key_c = transpile_expr(key);
+        char *out = format_text("bpp_index(%s, %s)", target_c, key_c);
+        free(target);
+        free(key);
+        free(target_c);
+        free(key_c);
         free(copy);
         return out;
     }
@@ -1837,22 +2023,28 @@ static const char *runtime_c =
 "#include <unistd.h>\n"
 "#endif\n"
 "\n"
-"typedef enum { BPP_NIL, BPP_NUMBER, BPP_STRING, BPP_BOOL, BPP_LIST } BppType;\n"
+"typedef enum { BPP_NIL, BPP_NUMBER, BPP_STRING, BPP_BOOL, BPP_LIST, BPP_TABLE } BppType;\n"
 "typedef struct BppValue BppValue;\n"
+"typedef struct BppTable BppTable;\n"
 "typedef struct { size_t count; size_t cap; BppValue *items; } BppList;\n"
-"struct BppValue { BppType type; double number; char *string; int boolean; BppList *list; };\n"
+"struct BppValue { BppType type; double number; char *string; int boolean; BppList *list; BppTable *table; };\n"
+"typedef struct { char *key; BppValue value; } BppTableEntry;\n"
+"struct BppTable { size_t count; size_t cap; BppTableEntry *entries; };\n"
 "\n"
 "static char *bpp_strdup(const char *text) { size_t n = strlen(text); char *p = (char *)malloc(n + 1); if (!p) exit(2); memcpy(p, text, n + 1); return p; }\n"
-"static BppValue bpp_nil(void) { BppValue v; v.type = BPP_NIL; v.number = 0; v.string = NULL; v.boolean = 0; v.list = NULL; return v; }\n"
+"static BppValue bpp_nil(void) { BppValue v; v.type = BPP_NIL; v.number = 0; v.string = NULL; v.boolean = 0; v.list = NULL; v.table = NULL; return v; }\n"
 "static BppValue bpp_number(double n) { BppValue v = bpp_nil(); v.type = BPP_NUMBER; v.number = n; return v; }\n"
 "static BppValue bpp_string(const char *s) { BppValue v = bpp_nil(); v.type = BPP_STRING; v.string = bpp_strdup(s); return v; }\n"
 "static BppValue bpp_bool(int b) { BppValue v = bpp_nil(); v.type = BPP_BOOL; v.boolean = !!b; return v; }\n"
 "static BppValue bpp_list(void) { BppValue v = bpp_nil(); v.type = BPP_LIST; v.list = (BppList *)calloc(1, sizeof(BppList)); if (!v.list) exit(2); return v; }\n"
+"static BppValue bpp_table(void) { BppValue v = bpp_nil(); v.type = BPP_TABLE; v.table = (BppTable *)calloc(1, sizeof(BppTable)); if (!v.table) exit(2); return v; }\n"
 "static void bpp_list_append(BppValue *list, BppValue item);\n"
+"static void bpp_table_set(BppValue *table, BppValue key_value, BppValue value);\n"
 "static BppValue bpp_list_of(size_t count, ...) { BppValue list = bpp_list(); va_list args; va_start(args, count); for (size_t i = 0; i < count; i++) { bpp_list_append(&list, va_arg(args, BppValue)); } va_end(args); return list; }\n"
+"static BppValue bpp_table_of(size_t count, ...) { BppValue table = bpp_table(); va_list args; va_start(args, count); for (size_t i = 0; i < count; i++) { BppValue key = va_arg(args, BppValue); BppValue value = va_arg(args, BppValue); bpp_table_set(&table, key, value); } va_end(args); return table; }\n"
 "static double bpp_to_number(BppValue v) { if (v.type == BPP_NUMBER) return v.number; if (v.type == BPP_BOOL) return v.boolean ? 1.0 : 0.0; return 0.0; }\n"
-"static int bpp_truthy(BppValue v) { if (v.type == BPP_NIL) return 0; if (v.type == BPP_BOOL) return v.boolean; if (v.type == BPP_NUMBER) return v.number != 0; if (v.type == BPP_STRING) return v.string && v.string[0]; if (v.type == BPP_LIST) return v.list && v.list->count > 0; return 0; }\n"
-"static char *bpp_to_string(BppValue v) { char buf[128]; if (v.type == BPP_STRING) return bpp_strdup(v.string ? v.string : \"\"); if (v.type == BPP_BOOL) return bpp_strdup(v.boolean ? \"true\" : \"false\"); if (v.type == BPP_NIL) return bpp_strdup(\"nothing\"); if (v.type == BPP_LIST) { snprintf(buf, sizeof(buf), \"[list:%zu]\", v.list ? v.list->count : 0); return bpp_strdup(buf); } if (fabs(v.number - (long long)v.number) < 0.0000001) snprintf(buf, sizeof(buf), \"%lld\", (long long)v.number); else snprintf(buf, sizeof(buf), \"%g\", v.number); return bpp_strdup(buf); }\n"
+"static int bpp_truthy(BppValue v) { if (v.type == BPP_NIL) return 0; if (v.type == BPP_BOOL) return v.boolean; if (v.type == BPP_NUMBER) return v.number != 0; if (v.type == BPP_STRING) return v.string && v.string[0]; if (v.type == BPP_LIST) return v.list && v.list->count > 0; if (v.type == BPP_TABLE) return v.table && v.table->count > 0; return 0; }\n"
+"static char *bpp_to_string(BppValue v) { char buf[128]; if (v.type == BPP_STRING) return bpp_strdup(v.string ? v.string : \"\"); if (v.type == BPP_BOOL) return bpp_strdup(v.boolean ? \"true\" : \"false\"); if (v.type == BPP_NIL) return bpp_strdup(\"nothing\"); if (v.type == BPP_LIST) { snprintf(buf, sizeof(buf), \"[list:%zu]\", v.list ? v.list->count : 0); return bpp_strdup(buf); } if (v.type == BPP_TABLE) { snprintf(buf, sizeof(buf), \"{table:%zu}\", v.table ? v.table->count : 0); return bpp_strdup(buf); } if (fabs(v.number - (long long)v.number) < 0.0000001) snprintf(buf, sizeof(buf), \"%lld\", (long long)v.number); else snprintf(buf, sizeof(buf), \"%g\", v.number); return bpp_strdup(buf); }\n"
 "static void bpp_print(BppValue v) { char *s = bpp_to_string(v); fputs(s, stdout); free(s); }\n"
 "static void bpp_println(BppValue v) { bpp_print(v); fputc('\\n', stdout); }\n"
 "static BppValue bpp_input(BppValue prompt) { bpp_print(prompt); fputc(' ', stdout); fflush(stdout); char buf[4096]; if (!fgets(buf, sizeof(buf), stdin)) return bpp_string(\"\"); size_t n = strlen(buf); while (n > 0 && (buf[n - 1] == '\\n' || buf[n - 1] == '\\r')) buf[--n] = 0; return bpp_string(buf); }\n"
@@ -1878,6 +2070,9 @@ static const char *runtime_c =
 "static BppValue bpp_list_get(BppValue list, size_t index) { if (list.type != BPP_LIST || !list.list || index >= list.list->count) return bpp_nil(); return list.list->items[index]; }\n"
 "static void bpp_list_empty(BppValue *list) { if (list->type == BPP_LIST && list->list) list->list->count = 0; }\n"
 "static void bpp_list_remove(BppValue *list, BppValue item) { if (list->type != BPP_LIST || !list->list) return; for (size_t i = 0; i < list->list->count; i++) { if (bpp_truthy(bpp_eq(list->list->items[i], item))) { memmove(&list->list->items[i], &list->list->items[i + 1], (list->list->count - i - 1) * sizeof(BppValue)); list->list->count--; return; } } }\n"
+"static void bpp_table_set(BppValue *table, BppValue key_value, BppValue value) { if (table->type != BPP_TABLE) *table = bpp_table(); char *key = bpp_to_string(key_value); for (size_t i = 0; i < table->table->count; i++) { if (strcmp(table->table->entries[i].key, key) == 0) { table->table->entries[i].value = value; free(key); return; } } if (table->table->count == table->table->cap) { table->table->cap = table->table->cap ? table->table->cap * 2 : 8; table->table->entries = (BppTableEntry *)realloc(table->table->entries, table->table->cap * sizeof(BppTableEntry)); if (!table->table->entries) exit(2); } table->table->entries[table->table->count].key = key; table->table->entries[table->table->count].value = value; table->table->count++; }\n"
+"static BppValue bpp_table_get(BppValue table, BppValue key_value) { if (table.type != BPP_TABLE || !table.table) return bpp_nil(); char *key = bpp_to_string(key_value); for (size_t i = 0; i < table.table->count; i++) { if (strcmp(table.table->entries[i].key, key) == 0) { BppValue value = table.table->entries[i].value; free(key); return value; } } free(key); return bpp_nil(); }\n"
+"static BppValue bpp_index(BppValue value, BppValue key) { if (value.type == BPP_TABLE) return bpp_table_get(value, key); if (value.type == BPP_LIST) { long index = (long)bpp_to_number(key); if (index < 0) return bpp_nil(); return bpp_list_get(value, (size_t)index); } return bpp_nil(); }\n"
 "static int bpp_os_last_exit_code_value = 0;\n"
 "static char bpp_os_last_error_text[1024] = \"\";\n"
 "static void bpp_os_clear_error(void) { bpp_os_last_error_text[0] = '\\0'; }\n"
@@ -2931,6 +3126,9 @@ static int compile_source_to_c(const char *source_path, const char *src, StringB
     char *work = xstrdup(src);
     int line_no = 0;
     int first_code_seen = 0;
+    int table_literal_depth = 0;
+    int table_literal_line = 0;
+    StringBuilder table_literal;
     char *line = strtok(work, "\n");
     while (line) {
         line_no++;
@@ -2941,6 +3139,19 @@ static int compile_source_to_c(const char *source_path, const char *src, StringB
         char *without_comment = strip_comment_copy(line);
         char *trimmed = trim_in_place(without_comment);
         if (trimmed[0]) {
+            if (table_literal_depth > 0) {
+                sb_append(&table_literal, " ");
+                sb_append(&table_literal, trimmed);
+                table_literal_depth += brace_delta(trimmed);
+                if (table_literal_depth <= 0) {
+                    compile_statement(&compiler, table_literal_line, table_literal.data);
+                    sb_free(&table_literal);
+                    table_literal_depth = 0;
+                }
+                free(without_comment);
+                line = strtok(NULL, "\n");
+                continue;
+            }
             if (compiler.skip_depth > 0) {
                 if (strcmp(trimmed, "end") == 0) {
                     compiler.skip_depth--;
@@ -2963,12 +3174,25 @@ static int compile_source_to_c(const char *source_path, const char *src, StringB
                     }
                 } else {
                     first_code_seen = 1;
-                    compile_statement(&compiler, line_no, trimmed);
+                    int delta = brace_delta(trimmed);
+                    if (delta > 0) {
+                        sb_init(&table_literal);
+                        sb_append(&table_literal, trimmed);
+                        table_literal_depth = delta;
+                        table_literal_line = line_no;
+                    } else {
+                        compile_statement(&compiler, line_no, trimmed);
+                    }
                 }
             }
         }
         free(without_comment);
         line = strtok(NULL, "\n");
+    }
+
+    if (table_literal_depth > 0) {
+        compile_error(&compiler, table_literal_line, table_literal.data, "Missing closing } for table literal.", NULL);
+        sb_free(&table_literal);
     }
 
     if (!compiler.had_error && compiler.indent != 1) {

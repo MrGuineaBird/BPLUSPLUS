@@ -13,7 +13,7 @@ B++ -> C -> native executable
 
 ## Status
 
-B++ version: `4.2.1`
+B++ version: `4.3`
 
 Current compiler:
 
@@ -70,7 +70,7 @@ Keep the default options checked:
 
 - Add B++ to user `PATH`
 - Create `b++` command alias
-- Register `.bpp` files with Windows
+- Register `.bpp` files with Windows and install the B++ file icon
 
 After setup finishes, open a new terminal and check:
 
@@ -254,6 +254,8 @@ example.bpp
 examples/fast_math.bpp
 examples/native_demo.bpp
 examples/ruby_lua_core.bpp
+examples/tables.bpp
+examples/project_pulse.bpp
 examples/os_module.bpp
 examples/everything_showcase.bpp
 ```
@@ -330,7 +332,7 @@ Indentation is recommended for readability, but `end` controls the block.
 ### Values
 
 B++ supports strings, numbers, booleans, empty values, variables, function calls,
-list literals, math, comparisons, `and`, and `or`.
+list literals, table literals, bracket lookup, math, comparisons, `and`, and `or`.
 
 ```bpp
 "hello"
@@ -341,6 +343,7 @@ false
 nothing
 nil
 [1, 2, 3]
+{ name = "Ada", score = 98 }
 score >= 10
 name == "Ada"
 ```
@@ -452,6 +455,31 @@ remove "Ada" from names
 
 ```bpp
 empty names
+```
+
+Use bracket lookup to read a list item by zero-based index.
+
+```bpp
+numbers = [10, 20, 30]
+say numbers[1]
+```
+
+### Tables
+
+Create a table with `{}` or `key = value` pairs.
+
+```bpp
+user = {
+    name = "Ada",
+    score = 98,
+    admin = true
+}
+```
+
+Use bracket lookup to read a value by key.
+
+```bpp
+say user["score"]
 ```
 
 ### Input
@@ -745,6 +773,8 @@ example.bpp               example B++ program
 examples/fast_math.bpp    fast numeric backend demo
 examples/native_demo.bpp  native compiler demo
 examples/ruby_lua_core.bpp Ruby/Lua-style syntax demo
+examples/tables.bpp       table/map syntax demo
+examples/project_pulse.bpp practical project-checking script
 examples/os_module.bpp     built-in os module demo
 examples/everything_showcase.bpp full language showcase
 DESIGN.md                 language design rules

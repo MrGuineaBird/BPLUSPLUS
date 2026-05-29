@@ -1,0 +1,12 @@
+user = {
+    name = "Ada",
+    score = 98,
+    admin = true
+}
+
+scores = [72, 85, 98]
+
+say user["name"]
+say user["score"]
+say user["admin"]
+say scores[2]

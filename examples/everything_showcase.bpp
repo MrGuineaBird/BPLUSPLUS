@@ -34,6 +34,13 @@ divide signal by 2
 score = square(3) + signal
 remainder = score % 2
 ready = false
+profile = {
+    pilot = pilot,
+    score = score,
+    ready = ready
+}
+
+say "Profile score: " + profile["score"]
 
 if score >= max_signal:
     say "Signal is legendary."
