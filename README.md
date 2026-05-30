@@ -72,6 +72,9 @@ Keep the default options checked:
 - Create `b++` command alias
 - Register `.bpp` files with Windows and install the B++ file icon
 
+Setup also creates a `bpp.cmd` shim beside `bpp.exe` so terminals can find the
+`bpp` command reliably.
+
 After setup finishes, open a new terminal and check:
 
 ```cmd

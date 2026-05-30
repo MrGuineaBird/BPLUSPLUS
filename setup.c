@@ -517,6 +517,7 @@ static int install_bpp(HWND hwnd, const char *install_root, int add_path, int re
     char source_setup[PATH_LIMIT];
     char install_bin[PATH_LIMIT];
     char target_bpp[PATH_LIMIT];
+    char target_bpp_cmd[PATH_LIMIT];
     char target_alias[PATH_LIMIT];
     char target_icon[PATH_LIMIT];
     char target_setup[PATH_LIMIT];
@@ -535,6 +536,7 @@ static int install_bpp(HWND hwnd, const char *install_root, int add_path, int re
 
     path_join(install_bin, sizeof(install_bin), install_root, "bin");
     path_join(target_bpp, sizeof(target_bpp), install_bin, "bpp.exe");
+    path_join(target_bpp_cmd, sizeof(target_bpp_cmd), install_bin, "bpp.cmd");
     path_join(target_alias, sizeof(target_alias), install_bin, "b++.cmd");
     path_join(target_icon, sizeof(target_icon), install_bin, "bpp_file.ico");
     path_join(target_setup, sizeof(target_setup), install_root, "B++ Setup.exe");
@@ -547,6 +549,12 @@ static int install_bpp(HWND hwnd, const char *install_root, int add_path, int re
 
     if (!CopyFileA(source_bpp, target_bpp, FALSE)) {
         show_error(hwnd, "Could not copy bpp.exe to the install folder.");
+        set_status("Install failed.");
+        return 0;
+    }
+
+    if (!write_text_file(target_bpp_cmd, "@echo off\r\n\"%~dp0bpp.exe\" %*\r\n")) {
+        show_error(hwnd, "Could not create the bpp command shim.");
         set_status("Install failed.");
         return 0;
     }
@@ -597,6 +605,7 @@ static int install_bpp(HWND hwnd, const char *install_root, int add_path, int re
 static int uninstall_bpp(HWND hwnd, const char *install_root) {
     char install_bin[PATH_LIMIT];
     char target_bpp[PATH_LIMIT];
+    char target_bpp_cmd[PATH_LIMIT];
     char target_alias[PATH_LIMIT];
     char target_icon[PATH_LIMIT];
     char target_setup[PATH_LIMIT];
@@ -606,6 +615,7 @@ static int uninstall_bpp(HWND hwnd, const char *install_root) {
 
     path_join(install_bin, sizeof(install_bin), install_root, "bin");
     path_join(target_bpp, sizeof(target_bpp), install_bin, "bpp.exe");
+    path_join(target_bpp_cmd, sizeof(target_bpp_cmd), install_bin, "bpp.cmd");
     path_join(target_alias, sizeof(target_alias), install_bin, "b++.cmd");
     path_join(target_icon, sizeof(target_icon), install_bin, "bpp_file.ico");
     path_join(target_setup, sizeof(target_setup), install_root, "B++ Setup.exe");
@@ -616,6 +626,7 @@ static int uninstall_bpp(HWND hwnd, const char *install_root) {
     unregister_bpp_files();
 
     DeleteFileA(target_bpp);
+    DeleteFileA(target_bpp_cmd);
     DeleteFileA(target_alias);
     DeleteFileA(target_icon);
 

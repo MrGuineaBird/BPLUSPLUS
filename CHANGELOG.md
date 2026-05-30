@@ -8,6 +8,7 @@ B++ 4.3 adds Lua/Ruby-style tables for keyed data.
 - Added multi-line table literals.
 - Added bracket lookup with `table["key"]`.
 - Added numeric list lookup with `list[0]`.
+- Added a `bpp.cmd` Windows command shim during setup for more reliable terminal command discovery.
 
 ## B++ 4.2.1
 
