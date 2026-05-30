@@ -1,0 +1,83 @@
+-- Project Pulse
+-- A practical B++ script for checking a project folder.
+
+<bpp unpackage os>
+
+settings = {
+    name = "Project Pulse",
+    preview_limit = 10,
+    report_name = "bpp_project_pulse.txt"
+}
+
+os current folder into cwd
+os home folder into home
+os temp folder into temp
+os process id into pid
+
+os file exists "README.md" into has_readme
+os file exists "build.bat" into has_windows_build
+os file exists "Makefile" into has_makefile
+os folder exists "examples" into has_examples
+os list folder "." into files
+
+file_count = 0
+preview_count = 0
+preview = ""
+
+for file in files:
+    file_count = file_count + 1
+
+    if preview_count < settings["preview_limit"]:
+        preview = preview + "- " + file + "\n"
+        preview_count = preview_count + 1
+    end
+end
+
+score = 0
+
+if has_readme:
+    score = score + 1
+end
+
+if has_windows_build:
+    score = score + 1
+end
+
+if has_makefile:
+    score = score + 1
+end
+
+if has_examples:
+    score = score + 1
+end
+
+report_path = temp + "/bpp_project_pulse.txt"
+
+report = settings["name"] + "\n"
+report = report + "folder: " + cwd + "\n"
+report = report + "home: " + home + "\n"
+report = report + "process id: " + pid + "\n"
+report = report + "files found: " + file_count + "\n"
+report = report + "project score: " + score + "/4\n"
+report = report + "\nChecks:\n"
+report = report + "README.md: " + has_readme + "\n"
+report = report + "build.bat: " + has_windows_build + "\n"
+report = report + "Makefile: " + has_makefile + "\n"
+report = report + "examples folder: " + has_examples + "\n"
+report = report + "\nPreview:\n" + preview
+
+write report to report_path
+
+say settings["name"]
+say "Folder: " + cwd
+say "Files found: " + file_count
+say "Project score: " + score + "/4"
+say "Report written to: " + report_path
+
+if score >= 3:
+    say "Status: healthy project shape"
+elseif score >= 2:
+    say "Status: usable, but could use more project structure"
+else:
+    say "Status: early project, add docs/build/examples next"
+end

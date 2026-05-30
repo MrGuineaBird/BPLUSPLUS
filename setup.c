@@ -224,6 +224,17 @@ static int env_set_user(const char *name, const char *value) {
     return rc == ERROR_SUCCESS;
 }
 
+static int env_delete_user(const char *name) {
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) {
+        return 1;
+    }
+
+    LONG rc = RegDeleteValueA(key, name);
+    RegCloseKey(key);
+    return rc == ERROR_SUCCESS || rc == ERROR_FILE_NOT_FOUND;
+}
+
 static void broadcast_environment_change(void) {
     SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)"Environment",
                         SMTO_ABORTIFHUNG, 5000, NULL);
@@ -255,49 +266,6 @@ static int remove_user_path(const char *path) {
     return env_set_user("Path", next);
 }
 
-static int extension_in_pathext(const char *list, const char *ext) {
-    char work[PATH_LIMIT];
-    snprintf(work, sizeof(work), "%s", list ? list : "");
-
-    char *start = work;
-    while (start && *start) {
-        char *end = strchr(start, ';');
-        if (end) {
-            *end = '\0';
-        }
-
-        while (*start == ' ') {
-            start++;
-        }
-
-        if (_stricmp(start, ext) == 0) {
-            return 1;
-        }
-
-        start = end ? end + 1 : NULL;
-    }
-
-    return 0;
-}
-
-static int add_user_pathext(const char *ext) {
-    char current[PATH_LIMIT];
-    char next[PATH_LIMIT];
-    env_get_user("PATHEXT", current, sizeof(current));
-
-    if (extension_in_pathext(current, ext)) {
-        return 1;
-    }
-
-    if (current[0]) {
-        snprintf(next, sizeof(next), "%s;%s", current, ext);
-    } else {
-        snprintf(next, sizeof(next), "%s", ext);
-    }
-
-    return env_set_user("PATHEXT", next);
-}
-
 static int remove_user_pathext(const char *ext) {
     char current[PATH_LIMIT];
     char next[PATH_LIMIT];
@@ -327,6 +295,10 @@ static int remove_user_pathext(const char *ext) {
         }
 
         start = end ? end + 1 : NULL;
+    }
+
+    if (!next[0]) {
+        return env_delete_user("PATHEXT");
     }
 
     return env_set_user("PATHEXT", next);
@@ -591,10 +563,11 @@ static int install_bpp(HWND hwnd, const char *install_root, int add_path, int re
             set_status("Install failed.");
             return 0;
         }
-        add_user_pathext(".BPP");
     } else {
         DeleteFileA(target_icon);
     }
+
+    remove_user_pathext(".BPP");
 
     broadcast_environment_change();
     set_status("B++ installed. Open a new terminal and run: bpp --version");
