@@ -23,10 +23,6 @@
     - def/function and return
     - ask/read/write
     - built-in os module with <bpp unpackage os>
-
-    Deliberately not supported in native mode:
-    - foreign-language imports
-    - foreign-language passthrough
 */
 
 #include <ctype.h>
